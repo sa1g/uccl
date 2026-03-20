@@ -144,14 +144,25 @@ local is_therock = get_config("is_therock")
 -- Manage CUDA/ROCm specific config
 -- ======
 
-if is_cuda then
-    add_requires("nccl", {system = true})
-    local nccl_home = path.join(os.projectdir(), "thirdparty/nccl")
+package("nccl_headers")
+    set_kind("library", {headeronly = true})
 
-    add_includedirs(
-        -- path.join(nccl_home, "build/include"),
-        path.join(nccl_home, "src/include")
-    )
+    set_homepage("https://developer.nvidia.com/nccl")
+    set_description("NVIDIA Collective Communications Library (NCCL) - headers only")
+
+    set_urls("https://github.com/NVIDIA/nccl/archive/$(version).zip", {excludes = {"ext*", "pkg/"}})
+
+    add_versions("v2.23.4-1", "ab90848ac0fe614b62b20108079b0edc777a66d91e4e2d1150222841fefaff4a")
+
+    on_install(function (package)
+        -- Headers-only, just copy headers
+        os.cp("src/include/*", package:installdir("include"))
+    end)
+package_end()
+
+if is_cuda then
+    add_requires("nccl_headers")
+    add_packages("nccl_headers")
 
     add_requires("cuda", {system = true})
     set_toolchains("cuda")
