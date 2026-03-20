@@ -24,7 +24,11 @@ target("ccl_rdma_core")
     set_kind("static")
     set_targetdir("$(builddir)/lib")
 
+    -- add_packages("nccl_headers")
     add_deps("util")
+
+    if is_cuda then 
+    end
 
     -- Sources
     add_files("*.cc")
@@ -49,6 +53,9 @@ target("ccl_rdma_core")
 
     -- Links
     add_links("ibverbs")
+    if is_cuda then 
+        add_packages("nccl_headers")
+    end
     if is_cuda and use_intel_rdma_nic then
         add_links("cudart", "cuda")
     end
@@ -56,7 +63,7 @@ target("ccl_rdma_core")
     add_cxxflags(table.unpack(cxxflags_common))
 
 --------------------------------------------------------
--- Plugin (shared library)
+-- Plugin (C++ shared library)
 --------------------------------------------------------
 target("ccl_rdma_plugin")
     set_kind("shared")
@@ -84,6 +91,9 @@ target("ccl_rdma_plugin")
 
     -- Links
     add_links("ibverbs")
+    if is_cuda then 
+        add_packages("nccl_headers")
+    end
     if is_cuda and use_intel_rdma_nic then
         add_links("cudart", "cuda")
     end

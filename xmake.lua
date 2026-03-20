@@ -13,7 +13,7 @@
 --   xmake build --tests p2p_test  # Build P2P tests only
 --
 
-set_xmakever("2.7.2")
+-- set_xmakever("2.7.2")
 
 -- Rules
 add_rules("mode.debug", "mode.release")
@@ -162,7 +162,7 @@ package_end()
 
 if is_cuda then
     add_requires("nccl_headers")
-    add_packages("nccl_headers")
+    
 
     add_requires("cuda", {system = true})
     set_toolchains("cuda")
