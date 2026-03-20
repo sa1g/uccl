@@ -29,30 +29,6 @@ option("backend")
     set_showmenu(true)
 option_end()
 
-option("arch")
-    on_check(function (option)
-        local detected_arch = os.arch()
-        if detected_arch == "arm64" then
-            option:set_value("aarch64")
-            print("  Detected architecture: arm64 (using aarch64)")
-        elseif detected_arch == "x86_64" then
-            option:set_value("x86_64")
-            print("  Detected architecture: x86_64")
-        else
-            print("  Warning: Unrecognized architecture '" .. detected_arch .. "'. Defaulting to x86_64.")
-            option:set_value("x86_64")
-        end
-    end)
-    set_values("x86_64", "aarch64", "arm64")
-    set_description("Target architecture")
-option_end()
-
-option("build_type")
-    set_default("all")
-    set_values("all", "ccl_rdma", "ccl_efa", "p2p", "ep", "p2p_ep", "ukernel")
-    set_description("What to build: all, ccl_rdma, ccl_efa, p2p, ep, p2p_ep, ukernel")
-option_end()
-
 option("is_efa")
     set_showmenu(true)
     set_description("Enable EFA support (auto-detected from system)")
@@ -141,26 +117,11 @@ option("uccl_local_version")
     set_description("Local version suffix for wheel (PEP 440)")
 option_end()
 
--- Build toggles
-option("build_tests")
-    set_default(false)
-    set_description("Build test/benchmark binaries (not included in wheels)")
-option_end()
-
-option("build_wheel")
-    set_default(false)
-    set_description("Build wheel after C++ compilation")
-option_end()
-
 -- ============================================================================
 -- LOAD CONFIGURATION
 -- ============================================================================
-
 local backend = get_config("backend") or "cuda"
-local is_cuda = (backend == "cuda")
-local arch = get_config("arch")
-local build_type = get_config("build_type")
-local py_ver = get_config("py_ver")
+
 local is_efa = get_config("is_efa")
 local use_efa = get_config("use_efa")
 local use_ib = get_config("use_ib")
@@ -170,41 +131,46 @@ local use_intel_rdma_nic = get_config("use_intel_rdma_nic")
 local rocm_idx_url = get_config("rocm_idx_url")
 local wheel_dir = get_config("wheel_dir")
 local uccl_local_version = get_config("uccl_local_version")
-local build_tests = get_config("build_tests")
-local build_wheel = get_config("build_wheel")
 
--- ============================================================================
--- HELPER FUNCTIONS
--- ============================================================================
+set_config("is_cuda", (backend) == "cuda")
+set_config("is_rocm", (backend) == "rocm" or (backend) == "rocm6")
+set_config("is_therock", (backend) == "therock")
 
--- -- Determine Makefile variant based on backend
--- local function get_makefile_variant(suffix)
---     suffix = suffix or ""
---     if backend == "cuda" then
---         return "Makefile"
---     elseif backend:find("rocm") then
---         return "Makefile.rocm" .. suffix
---     elseif backend == "therock" then
---         return "Makefile.therock" .. suffix
---     end
---     return "Makefile" .. suffix
--- end
+local is_cuda = get_config("is_cuda")
+local is_rocm = get_config("is_rocm")
+local is_therock = get_config("is_therock")
 
--- -- Build Make environment variables
--- local function get_make_env()
---     return {
---         USE_EFA = tostring(use_efa and 1 or 0),
---         USE_IB = tostring(use_ib and 1 or 0),
---         USE_TCP = tostring(use_tcp and 1 or 0),
---         USE_DIETGPU = tostring(use_dietgpu and 1 or 0),
---         USE_INTEL_RDMA_NIC = tostring(use_intel_rdma_nic and 1 or 0),
---     }
--- end
+-- ======
+-- Manage CUDA/ROCm specific config
+-- ======
 
--- print("[xmake] Backend: " .. tostring(backend))
--- print("[xmake] Arch: " .. tostring(arch))
--- print("[xmake] Build type: " .. tostring(build_type))
--- print("[xmake] Build tests: " .. tostring(build_tests))
+if is_cuda then
+    add_requires("nccl", {system = true})
+    local nccl_home = path.join(os.projectdir(), "thirdparty/nccl")
+
+    add_includedirs(
+        -- path.join(nccl_home, "build/include"),
+        path.join(nccl_home, "src/include")
+    )
+
+    add_requires("cuda", {system = true})
+    set_toolchains("cuda")
+    add_cugencodes("native") 
+else
+    -- add_requires("rccl", {system = true})
+
+    -- local rccl_home = path.join(os.projectdir(), "thirdparty/nccl")
+    -- local hip_home = os.getenv("HIP_HOME") or "/opt/rocm"
+
+    -- add_includedirs(
+    --     path.join(rccl_home, "build/release/include"),
+    --     path.join(rccl_home, "src/include") --,
+    --     -- path.join(hip_home, "lib")
+    -- )
+
+    -- -- include libraries for ROCm (e.g., ROCm runtime, ROCm compiler)
+    -- add_requires("hip", {system = true})
+end
 
 -- ============================================================================
 -- INCLUDE COMPONENT TARGETS
@@ -213,7 +179,7 @@ local build_wheel = get_config("build_wheel")
 -- Include subdirectories with their own xmake.lua files
 includes("include")
 includes("collective/rdma/")
--- includes("collective/efa")
+includes("collective/efa")
 -- includes("p2p")
 -- includes("ep")
 -- includes("experimental/ukernel")
@@ -273,17 +239,15 @@ includes("collective/rdma/")
 -- -- WHEEL BUILD TARGET
 -- -- ============================================================================
 
--- if build_wheel then
---     target("wheel")
---         set_kind("phony")
---         -- Ensure all C++ libs + bindings are built
---         depends_on("ccl_rdma")
---         depends_on("p2p_py")
---         depends_on("ep_py")
-        
---         on_build(function(target)
---             print("[wheel] Building Python wheel...")
---             os.execv("python3", {"-m", "build"})
---         end)
---     target_end()
--- end
+-- target("wheel")
+--     set_kind("phony")
+--     -- Ensure all C++ libs + bindings are built
+--     depends_on("ccl_rdma")
+--     -- depends_on("p2p_py")
+--     -- depends_on("ep_py")
+    
+--     on_build(function(target)
+--         print("[wheel] Building Python wheel...")
+--         os.execv("python3", {"-m", "build"})
+--     end)
+-- target_end()
