@@ -1,133 +1,73 @@
-local backend = get_config("backend") or "cuda"
-local use_intel_rdma_nic = get_config("use_intel_rdma_nic")
+rule("ccl.rdma")
+    on_config(function (target)
+        target:add("cxxflags", "-Wno-pointer-arith", "-Wno-interference-size", "-fPIC", "-MMD")
+    end)
+rule_end()
 
-local is_cuda = get_config("is_cuda")
-local is_rocm = get_config("is_rocm")
-local is_therock = get_config("therock")
-
-local plugin_name = is_cuda and "libnccl-net-uccl.so" or "librccl-net-uccl.so"
-local target_basename = is_cuda and "nccl-net-uccl" or "rccl-net-uccl"
-
-local cxxflags_common = {
-    "-O3",
-    "-g",
-    "-std=c++17",
-    "-Wno-pointer-arith",
-    "-Wno-interference-size",
-    "-fPIC",
-}
-
---------------------------------------------------------
--- Core library (static)
---------------------------------------------------------
 target("ccl_rdma_core")
     set_kind("static")
     set_targetdir("$(builddir)/lib")
 
-    -- add_packages("nccl_headers")
-    add_deps("util")
+    add_rules("uccl.common", "uccl.backend", "ccl.rdma")
 
-    if is_cuda then 
-    end
-
-    -- Sources
     add_files("*.cc")
-    remove_files("*_main.cc")
-    remove_files("*_test.cc")
+    remove_files("*_main.cc", "*_test.cc", "*_plugin.cc")
 
-    -- Defines
-    if is_cuda then
-        add_rules("cuda")
-        add_defines("USE_CUDA")
-
-        if is_mode("release") then 
-            add_cuflags(
-                "-O3",
-                "-std=c++17",
-                "-Wno-pointer-arith",
-                "-Wno-interference-size"
-            )
-        elseif is_mode("debug") then
-            add_cuflags(
-                "-O0",
-                "-g",
-                "-std=c++17",
-                "-Wno-pointer-arith",
-                "-Wno-interference-size"
-            )
-        end
-    else
-        add_defines("USE_ROCM")
-    end
-
-    add_defines("USE_INTEL_RDMA_NIC=" .. (use_intel_rdma_nic and "1" or "0"))
-
-    -- Links
-    add_links("ibverbs")
-    if is_cuda then 
-        add_packages("nccl_headers")
-    end
-    if is_cuda and use_intel_rdma_nic then
-        add_links("cudart", "cuda")
-    end
-
-    if is_mode("release") then 
-        add_cxxflags(table.unpack(cxxflags_common))
-    elseif is_mode("debug") then
-        add_cxxflags(
-            "-O0",
-            "-g",
-            "-std=c++17",
-            "-Wno-pointer-arith",
-            "-Wno-interference-size",
-            "-fPIC"
-        )
-    end
---------------------------------------------------------
--- Plugin (C++ shared library)
---------------------------------------------------------
+-- Plugin
 target("ccl_rdma_plugin")
     set_kind("shared")
-    set_basename(target_basename)
     set_targetdir("$(builddir)/lib")
 
+    add_rules("uccl.common", "uccl.backend", "ccl.rdma")
     add_deps("ccl_rdma_core")
 
     add_files("*_plugin.cc")
 
-    add_ldflags("-Wl,-soname," .. plugin_name)
+    set_basename(get_config("backend") == "cuda" and "nccl-net-uccl" or "rccl-net-uccl")
 
-    -- Defines
-    if is_cuda then
-        add_defines("USE_CUDA")
-        add_rules("cuda")
-        set_policy("build.cuda.devlink", true)
-    elseif is_rocm then
-        add_defines("USE_ROCM")
-    end
 
-    if use_intel_rdma_nic then
-        add_defines("INTEL_RDMA_NIC", "MTU_4096")
-    end
 
-    -- Links
-    add_links("ibverbs")
-    if is_cuda then 
-        add_packages("nccl_headers")
-    end
-    if is_cuda and use_intel_rdma_nic then
-        add_links("cudart", "cuda")
-    end
+-- ====================================================================
+-- Tests & Benchmarks
+-- ====================================================================
 
-    if is_mode("release") then 
-        add_cxxflags(table.unpack(cxxflags_common))
-    elseif is_mode("debug") then
-        add_cxxflags(
-            "-O0",
-            "-g",
-            "-std=c++17",
-            "-Wno-pointer-arith",
-            "-Wno-interference-size",
-            "-fPIC"
-        )
-    end
+-- -- Unit test target
+-- target("ccl_rdma_test")
+--     set_kind("binary")
+--     set_targetdir("$(builddir)/test")
+    
+--     add_rules("ccl.rdma")
+--     add_deps("ccl_rdma_core")
+    
+--     add_files("*_test.cc")
+    
+--     -- Optional: set as test to run with xmake test
+--     add_tests("default")
+
+for _, test_file in ipairs(os.files("*_test.cc")) do
+    local test_name = test_file:match("([^/]+)_test%.cc$")    
+    target("test_collective_rdma_" .. test_name)
+        set_kind("binary")
+        set_symbols("debug")
+        
+        set_targetdir("$(builddir)/test")
+        add_files(test_file)
+
+        add_deps("ccl_rdma_core")
+        add_packages("gtest", "gflags")
+
+end
+
+    -- -- -- -- Common flags for all configurations
+    -- -- -- add_cxflags("-Wno-pointer-arith", "-Wno-interference-size", "-fPIC")
+    -- -- -- add_cxxflags("-std=c++17")
+    
+    -- -- -- -- Debug-specific flags
+    -- -- -- if is_mode("debug") then
+    -- -- --     add_cxflags("-g", "-O0")
+    -- -- -- end
+    
+    -- -- -- -- Release-specific flags
+    -- -- -- if is_mode("release") then
+    -- -- --     add_cxflags("-O3")
+    -- -- -- end

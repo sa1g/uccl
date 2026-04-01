@@ -140,6 +140,15 @@ local is_cuda = get_config("is_cuda")
 local is_rocm = get_config("is_rocm")
 local is_therock = get_config("is_therock")
 
+if is_mode("debug") then
+    set_symbols("debug")
+    set_optimize("none")
+else
+    set_symbols("hidden")
+    set_optimize("fastest")
+    set_strip("all")
+end
+
 -- ======
 -- Manage CUDA/ROCm specific config
 -- ======
@@ -160,28 +169,43 @@ package("nccl_headers")
     end)
 package_end()
 
-if is_cuda then
+add_requires("gtest", "gflags")
+
+if is_cuda then 
     add_requires("nccl_headers")
-    
-
-    add_requires("cuda", {system = true})
-    set_toolchains("cuda")
-    add_cugencodes("native") 
-else
-    -- add_requires("rccl", {system = true})
-
-    -- local rccl_home = path.join(os.projectdir(), "thirdparty/nccl")
-    -- local hip_home = os.getenv("HIP_HOME") or "/opt/rocm"
-
-    -- add_includedirs(
-    --     path.join(rccl_home, "build/release/include"),
-    --     path.join(rccl_home, "src/include") --,
-    --     -- path.join(hip_home, "lib")
-    -- )
-
-    -- -- include libraries for ROCm (e.g., ROCm runtime, ROCm compiler)
-    -- add_requires("hip", {system = true})
+    add_rules("cuda", {system = true})
 end
+
+-- ============================================================================
+-- RULES
+-- ============================================================================
+
+rule("uccl.backend")
+    on_config(function (target)
+        if get_config("backend") == "cuda" then
+            target:add("packages", "nccl_headers")
+            target:add("defines", "USE_CUDA")
+        else
+            target:add("defines", "USE_ROCM")
+        end
+    end)
+rule_end()
+
+rule("uccl.common")
+    on_load(function (target)
+        target:add("deps", "util")
+        target:add("links", "ibverbs")
+
+        if get_config("use_intel_rdma_nic") then
+            target:add("defines", "USE_INTEL_RDMA_NIC=1")
+        end
+    end)
+rule_end()
+
+-- ============================================================================
+-- SET GLOBAL CONFIG
+-- ============================================================================
+set_languages("c++17")
 
 -- ============================================================================
 -- INCLUDE COMPONENT TARGETS
@@ -190,75 +214,7 @@ end
 -- Include subdirectories with their own xmake.lua files
 includes("include")
 includes("collective/rdma/")
-includes("collective/efa")
+-- includes("collective/efa")
 -- includes("p2p")
 -- includes("ep")
 -- includes("experimental/ukernel")
-
--- -- ============================================================================
--- -- COMPOSITE TARGETS
--- -- ============================================================================
-
--- -- Meta-target: p2p_ep builds both
--- target("p2p_ep")
---     set_kind("phony")
---     depends_on("p2p_lib")
---     depends_on("ep_lib")
--- target_end()
-
--- -- Meta-target: all (controlled by build_type option)
--- if build_type == "all" then
---     target("all")
---         set_kind("phony")
---         if use_efa then
---             depends_on("ccl_efa")
---         else
---             depends_on("ccl_rdma")
---         end
---         depends_on("p2p_lib")
---         depends_on("ep_lib")
---         depends_on("ukernel")
---     target_end()
--- elseif build_type == "ccl_rdma" then
---     target("all")
---         set_kind("phony")
---         depends_on("ccl_rdma")
---     target_end()
--- elseif build_type == "ccl_efa" then
---     target("all")
---         set_kind("phony")
---         depends_on("ccl_efa")
---     target_end()
--- elseif build_type == "p2p" then
---     target("all")
---         set_kind("phony")
---         depends_on("p2p_lib")
---     target_end()
--- elseif build_type == "ep" then
---     target("all")
---         set_kind("phony")
---         depends_on("ep_lib")
---     target_end()
--- elseif build_type == "ukernel" then
---     target("all")
---         set_kind("phony")
---         depends_on("ukernel")
---     target_end()
--- end
-
--- -- ============================================================================
--- -- WHEEL BUILD TARGET
--- -- ============================================================================
-
--- target("wheel")
---     set_kind("phony")
---     -- Ensure all C++ libs + bindings are built
---     depends_on("ccl_rdma")
---     -- depends_on("p2p_py")
---     -- depends_on("ep_py")
-    
---     on_build(function(target)
---         print("[wheel] Building Python wheel...")
---         os.execv("python3", {"-m", "build"})
---     end)
--- target_end()
