@@ -120,26 +120,6 @@ option_end()
 -- ============================================================================
 -- LOAD CONFIGURATION
 -- ============================================================================
-local backend = get_config("backend") or "cuda"
-
-local is_efa = get_config("is_efa")
-local use_efa = get_config("use_efa")
-local use_ib = get_config("use_ib")
-local use_tcp = get_config("use_tcp")
-local use_dietgpu = get_config("use_dietgpu")
-local use_intel_rdma_nic = get_config("use_intel_rdma_nic")
-local rocm_idx_url = get_config("rocm_idx_url")
-local wheel_dir = get_config("wheel_dir")
-local uccl_local_version = get_config("uccl_local_version")
-
-set_config("is_cuda", (backend) == "cuda")
-set_config("is_rocm", (backend) == "rocm" or (backend) == "rocm6")
-set_config("is_therock", (backend) == "therock")
-
-local is_cuda = get_config("is_cuda")
-local is_rocm = get_config("is_rocm")
-local is_therock = get_config("is_therock")
-
 if is_mode("debug") then
     set_symbols("debug")
     set_optimize("none")
@@ -171,7 +151,7 @@ package_end()
 
 add_requires("gtest", "gflags")
 
-if is_cuda then 
+if get_config("backend") == "cuda" then 
     add_requires("nccl_headers")
     add_requires("nccl", {system = true})
     add_rules("cuda", {system = true})
