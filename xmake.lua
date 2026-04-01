@@ -173,6 +173,7 @@ add_requires("gtest", "gflags")
 
 if is_cuda then 
     add_requires("nccl_headers")
+    add_requires("nccl", {system = true})
     add_rules("cuda", {system = true})
 end
 
