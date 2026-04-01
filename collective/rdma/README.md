@@ -2,6 +2,14 @@
 
 UCCL RDMA plugin for NCCL/RCCL.
 
+## Git submodules
+
+From the repo root:
+
+```bash
+git submodule update --init thirdparty/nccl thirdparty/nccl-tests thirdparty/rccl thirdparty/rccl-tests
+```
+
 1. UCCL supports two network fabrics: RoCE, Infiniband.
 2. UCCL supports two modes: Unreliable Connection (UC) and Reliable Connection (RC).
 3. UCCL supports both Nvidia and AMD GPUs.
@@ -58,7 +66,7 @@ make MPI=1 MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda 
 
 The easiest way is to use docker, which packs all needed external libraries into a python wheel and install into your local python env: 
 ```bash
-cd $UCCL_HOME && bash build.sh cuda rdma --install
+cd $UCCL_HOME && bash build.sh cu12 rdma --install
 ```
 
 The following alternative is best for development where you have installed all needed external libraries: 
