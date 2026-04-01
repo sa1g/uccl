@@ -14,7 +14,7 @@ local build_tests = get_config("build_tests")
 target("p2p_lib")
     set_kind("shared")
     set_basename("libuccl_p2p")
-    set_targetdir("$(buildir)/lib")
+    set_targetdir("$(builddir)/lib")
     
     -- Core library: exclude bindings and tests
     local lib_src = {
@@ -90,7 +90,7 @@ local py_ext = py_stable_abi and ".abi3.so" or ".so"
 target("p2p_py")
     set_kind("shared")
     set_basename("p2p" .. (py_stable_abi and "" or ""))
-    set_targetdir("$(buildir)")
+    set_targetdir("$(builddir)")
     add_includedirs(".") 
     
     -- Python binding source only
@@ -111,7 +111,7 @@ target("p2p_py")
     add_deps("p2p_lib")
     
     -- Link against built library
-    add_linkdirs("$(buildir)/lib")
+    add_linkdirs("$(builddir)/lib")
     add_links("uccl_p2p")
     
     -- Stable ABI flags
@@ -142,13 +142,13 @@ if build_tests then
         local test_name = test_file:match("([^/]+)_test%.cc$")
         target("p2p_test_" .. test_name)
             set_kind("binary")
-            set_targetdir("$(buildir)/tests")
+            set_targetdir("$(builddir)/tests")
             add_files(test_file)
             
             -- Link against library
             add_deps("p2p_lib")
             add_includedirs(".", "include", "$(projectdir)/include")
-            add_linkdirs("$(buildir)/lib")
+            add_linkdirs("$(builddir)/lib")
             add_links("uccl_p2p", "gtest", "pthread", "z", "elf")
             
             add_cxxflags("-O3", "-std=c++17")

@@ -25,7 +25,7 @@ end
 
 target("ep_lib")
     set_kind("shared")
-    set_targetdir("$(buildir)/lib")
+    set_targetdir("$(builddir)/lib")
     
     -- C++ sources
     add_files("src/proxy.cpp", "src/rdma.cpp", "src/common.cpp", 
@@ -78,7 +78,7 @@ local py_ext = py_stable_abi and ".abi3.so" or ".so"
 
 target("ep_py")
     set_kind("shared")
-    set_targetdir("$(buildir)")
+    set_targetdir("$(builddir)")
     
     -- Only nanobind sources
     add_files("src/uccl_ep.cc")
@@ -101,7 +101,7 @@ target("ep_py")
     
     -- Link against ep_lib
     add_deps("ep_lib")
-    add_linkdirs("$(buildir)/lib")
+    add_linkdirs("$(builddir)/lib")
     add_links("uccl_ep_lib")
     
     local cuda_home = (os.getenv("CUDA_HOME") or "/usr/local/cuda")
@@ -131,10 +131,10 @@ if build_tests then
         local test_name = test_file:match("([^/]+)_test%.cc$")
         target("ep_test_" .. test_name)
             set_kind("binary")
-            set_targetdir("$(buildir)/tests")
+            set_targetdir("$(builddir)/tests")
             add_files(test_file)
             add_includes("include", "$(projectdir)/include")
-            add_linkdirs("$(buildir)/lib")
+            add_linkdirs("$(builddir)/lib")
             add_links("uccl_ep_lib", "gtest", "pthread")
             add_cxxflags("-O3", "-std=c++17", "-DGTEST_HAS_PTHREAD=1")
         target_end()

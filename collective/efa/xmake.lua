@@ -1,78 +1,140 @@
--- EFA collective plugin - EFA transport + custom NCCL
--- Produces: libnccl-net-efa.so + libnccl-efa.so (custom NCCL)
+local is_cuda = get_config("is_cuda")
 
-local backend = get_config("backend")
-local arch = get_config("arch")
-
--- Skip on ARM or non-CUDA
-if arch == "aarch64" or backend:find("rocm") or backend == "therock" then
-    function on_load()
-        -- Skip this target
-        set_kind("phony")
-        print("[efa] Skipping EFA build on " .. arch .. " or non-CUDA backend")
-    end
-    return
-end
-
--- Main EFA plugin
 target("ccl_efa")
-    set_kind("shared")
-    set_basename("libnccl-net-efa")
-    set_targetdir("$(buildir)/lib")
-    
-    local src_files = os.files("*.cc")
-    src_files = table.filter(src_files, function(f) 
-        return not f:match("_test%.cc$")
-    end)
-    add_files(table.unpack(src_files))
-    
-    add_includedirs(".", "$(projectdir)/include")
-    
-    local cuda_home = (os.getenv("CUDA_HOME") or "/usr/local/cuda")
-    local efa_home = (os.getenv("EFA_HOME") or "/opt/amazon/efa")
-    
-    add_includedirs(cuda_home .. "/include", efa_home .. "/include")
-    add_linkdirs(cuda_home .. "/lib64", efa_home .. "/lib")
-    add_links("efa", "cudart", "z", "elf", "pthread")
-    
-    add_cxxflags("-O3", "-std=c++17", "-fPIC", "-Wno-pointer-arith")
-    add_defines("USE_CUDA")
-    
-    if get_config("use_intel_rdma_nic") then
-        add_defines("INTEL_RDMA_NIC")
+    if not is_cuda then
+        on_load(function()
+            raise("EFA plugin requires CUDA backend. Please set backend=cuda.")
+        end)
+        return
     end
-    
-    on_install(function(target)
-        os.mkdir("$(projectdir)/uccl/lib")
-        os.cp(target:targetfile(), "$(projectdir)/uccl/lib/")
-    end)
-target_end()
 
--- Custom NCCL for EFA (dependency for P2P)
-target("nccl_efa")
+    set_policy("build.cuda.devlink", false)
+
+
     set_kind("shared")
-    set_basename("libnccl-efa")
-    set_targetdir("$(buildir)/lib")
-    
-    -- Build from thirdparty/nccl-sg
-    set_sourcedir("$(projectdir)/thirdparty/nccl-sg")
-    
-    on_build(function(target)
-        -- Invoke nccl-sg Makefile
-        local cuda_home = (os.getenv("CUDA_HOME") or "/usr/local/cuda")
-        os.execv("make", {
-            "-C", "$(projectdir)/thirdparty/nccl-sg",
-            "src.build",
-            "-j" .. os.cpu_count(),
-            "CUDA_HOME=" .. cuda_home,
-            "NVCC_GENCODE=-gencode=arch=compute_90,code=sm_90",
-            "USE_INTEL_RDMA_NIC=" .. (get_config("use_intel_rdma_nic") and "1" or "0")
-        })
-    end)
-    
-    on_install(function(target)
-        os.mkdir("$(projectdir)/uccl/lib")
-        os.cp("$(projectdir)/thirdparty/nccl-sg/build/lib/libnccl.so", 
-              "$(projectdir)/uccl/lib/libnccl-efa.so")
-    end)
-target_end()
+    set_targetdir("$(builddir)/lib")
+    set_basename("nccl-net-efa")
+
+    add_deps("util")
+
+    -- Use system packages already declared at top-level
+    add_packages("cuda", "nccl")
+
+    local efa_home = os.getenv("EFA_HOME") or "/opt/amazon/efa"
+
+    -- Includes (CUDA/NCCL handled by add_packages)
+    add_includedirs(
+        path.join(efa_home, "include")
+    )
+
+    -- Sources
+    add_files("*.cc|*_main.cc|*_test.cc|*_plugin.cc")
+    add_files("scattered_memcpy.cu")
+
+    -- Link directories
+    add_linkdirs(path.join(efa_home, "lib"))
+
+    -- Link libraries
+    add_links(
+        "ibverbs",
+        "efa",
+        "pthread",
+        "gflags",
+        "z",
+        "elf"
+    )
+
+    -- CUDA runtime/libs come from toolchain/package,
+    -- but explicitly adding doesn't hurt if needed:
+    add_links("cudart", "cuda")
+
+    add_defines("USE_CUDA")
+
+    if get_config("use_intel_rdma_nic") then
+        add_defines("INTEL_RDMA_NIC", "MTU_4096")
+    end
+
+    add_cxxflags(
+        "-O3",
+        "-g",
+        "-std=c++17",
+        "-Wno-pointer-arith",
+        "-Wno-interference-size",
+        "-fPIC"
+        -- NOTE: -MMD/-MP not needed (Xmake handles deps)
+    )
+
+    add_rules("cuda")
+
+
+target("ccl_efa_py")
+    -- set cuda linking to false
+    set_kind("shared")
+    set_basename("ccl_efa_py")
+    set_targetdir("$(builddir)/lib")
+    set_filename("ccl_efa_py.so")
+
+    set_policy("build.cuda.devlink", false)
+    add_deps("ccl_efa")
+
+
+
+-- local is_cuda = get_config("is_cuda")
+
+-- local plugin_name = "libnccl-net-efa.so"
+-- local target_basename = "nccl-net-efa"
+
+-- target("ccl_efa")
+--     if not is_cuda then 
+--         -- Skip EFA build if not using CUDA
+--         -- Throw error to prevent downstream targets from building with missing dependency
+--         on_load(function()
+--             raise("EFA plugin requires CUDA backend. Please set backend=cuda to build this target.")
+--         end)
+--         return
+--     end
+
+--     set_kind("shared")
+--     add_deps("util")
+--     set_targetdir("$(builddir)/lib")
+--     set_basename(target_basename)
+
+--     local efa_home = os.getenv("EFA_HOME") or "/opt/amazon/efa"
+--     -- TODO: local abs_home = 
+
+--     add_includedirs(
+--         path.join(efa_home, "/include")
+--         -- TODO: add abs_home/include
+--     ) 
+
+
+--     add_files("*.cc")
+--     remove_files("*_main.cc")
+--     remove_files("*_test.cc")
+
+--     -- -L ${CUDA_HOME}/lib64 -L ${EFA_HOME}/lib -libverbs -lefa -lcudart -lcuda -lpthread  -lgflags -lgtest -lz -lelf
+--     add_links(path.join(efa_home, "lib"))
+--     add_links("ibverbs", "efa", "cudart", "z", "elf", "pthread", "gflags", "gtest")
+--     -- add_links("cudart", "cuda")
+
+
+--     add_defines("USE_CUDA")
+--     add_rules("cuda")
+
+--     if get_config("use_intel_rdma_nic") then 
+--        add_defines("USE_INTEL_RDMA_NIC=" .. (use_intel_rdma_nic and "1" or "0"))
+--        add_defines("MTU_4096")
+--     end
+
+--     add_cxxflags(
+--         "-O3",
+--         "-g",
+--         "-std=c++17",
+--         "-Wno-pointer-arith",
+--         "-Wno-interference-size",
+--         "-fPIC",
+--         "-MMD",
+--         "-MP"
+--     )
+-- -- TODO: add test targets
+-- -- TODO: add main target

@@ -39,12 +39,23 @@ target("ccl_rdma_core")
     if is_cuda then
         add_rules("cuda")
         add_defines("USE_CUDA")
-        add_cuflags(
-            "-O3",
-            "-std=c++17",
-            "-Wno-pointer-arith",
-            "-Wno-interference-size"
-        )
+
+        if is_mode("release") then 
+            add_cuflags(
+                "-O3",
+                "-std=c++17",
+                "-Wno-pointer-arith",
+                "-Wno-interference-size"
+            )
+        elseif is_mode("debug") then
+            add_cuflags(
+                "-O0",
+                "-g",
+                "-std=c++17",
+                "-Wno-pointer-arith",
+                "-Wno-interference-size"
+            )
+        end
     else
         add_defines("USE_ROCM")
     end
@@ -60,8 +71,18 @@ target("ccl_rdma_core")
         add_links("cudart", "cuda")
     end
 
-    add_cxxflags(table.unpack(cxxflags_common))
-
+    if is_mode("release") then 
+        add_cxxflags(table.unpack(cxxflags_common))
+    elseif is_mode("debug") then
+        add_cxxflags(
+            "-O0",
+            "-g",
+            "-std=c++17",
+            "-Wno-pointer-arith",
+            "-Wno-interference-size",
+            "-fPIC"
+        )
+    end
 --------------------------------------------------------
 -- Plugin (C++ shared library)
 --------------------------------------------------------
@@ -98,4 +119,15 @@ target("ccl_rdma_plugin")
         add_links("cudart", "cuda")
     end
 
-    add_cxxflags(table.unpack(cxxflags_common))
+    if is_mode("release") then 
+        add_cxxflags(table.unpack(cxxflags_common))
+    elseif is_mode("debug") then
+        add_cxxflags(
+            "-O0",
+            "-g",
+            "-std=c++17",
+            "-Wno-pointer-arith",
+            "-Wno-interference-size",
+            "-fPIC"
+        )
+    end

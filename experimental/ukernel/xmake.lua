@@ -10,7 +10,7 @@ end
 
 target("ukernel")
     set_kind("shared")
-    set_targetdir("$(buildir)/lib")
+    set_targetdir("$(builddir)/lib")
     
     add_files("*.cu")
     

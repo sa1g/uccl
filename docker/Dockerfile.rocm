@@ -23,6 +23,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         python${PY_VER} python${PY_VER}-dev python${PY_VER}-venv python3-setuptools python3-distutils && \
 \
+
+# Add xmake
+    wget -qO- https://xmake.io/shget.text | bash && \
+
 # ───── Bootstrap pip for Python ${PY_VER} ─────
     curl -sS https://bootstrap.pypa.io/get-pip.py | python${PY_VER} && \
     ln -sf /usr/bin/pip${PY_VER} /usr/local/bin/pip && \
