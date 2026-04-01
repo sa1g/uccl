@@ -25,24 +25,9 @@ target("ccl_rdma_plugin")
 
     set_basename(get_config("backend") == "cuda" and "nccl-net-uccl" or "rccl-net-uccl")
 
-
-
 -- ====================================================================
 -- Tests & Benchmarks
 -- ====================================================================
-
--- -- Unit test target
--- target("ccl_rdma_test")
---     set_kind("binary")
---     set_targetdir("$(builddir)/test")
-    
---     add_rules("ccl.rdma")
---     add_deps("ccl_rdma_core")
-    
---     add_files("*_test.cc")
-    
---     -- Optional: set as test to run with xmake test
---     add_tests("default")
 
 for _, test_file in ipairs(os.files("*_test.cc")) do
     local test_name = test_file:match("([^/]+)_test%.cc$")    
@@ -57,17 +42,3 @@ for _, test_file in ipairs(os.files("*_test.cc")) do
         add_packages("gtest", "gflags")
 
 end
-
-    -- -- -- -- Common flags for all configurations
-    -- -- -- add_cxflags("-Wno-pointer-arith", "-Wno-interference-size", "-fPIC")
-    -- -- -- add_cxxflags("-std=c++17")
-    
-    -- -- -- -- Debug-specific flags
-    -- -- -- if is_mode("debug") then
-    -- -- --     add_cxflags("-g", "-O0")
-    -- -- -- end
-    
-    -- -- -- -- Release-specific flags
-    -- -- -- if is_mode("release") then
-    -- -- --     add_cxflags("-O3")
-    -- -- -- end
