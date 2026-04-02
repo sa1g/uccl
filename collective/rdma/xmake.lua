@@ -40,5 +40,4 @@ for _, test_file in ipairs(os.files("*_test.cc")) do
 
         add_deps("ccl_rdma_core")
         add_packages("gtest", "gflags")
-
 end

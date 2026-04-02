@@ -124,7 +124,7 @@ if is_mode("debug") then
     set_symbols("debug")
     set_optimize("none")
 else
-    set_symbols("hidden")
+    -- set_symbols("hidden")
     set_optimize("fastest")
     set_strip("all")
 end
@@ -150,6 +150,10 @@ package("nccl_headers")
 package_end()
 
 add_requires("gtest", "gflags")
+
+-- Required for Python bindings - p2p
+add_requires("python", {system = true})
+add_requires("nanobind 2.12.0", {configs = {python = true}})
 
 if get_config("backend") == "cuda" then 
     add_requires("nccl_headers")

@@ -30,60 +30,53 @@ option_end()
 -- COMMON RULE
 -- ============================================================================
 
-rule("ccl.p2p")
-    on_config(function (target)
+rule("p2p.base")
+    on_load(function (target)
+        local p2p_dir = os.scriptdir()
+
+        target:add("includedirs",
+            p2p_dir,
+            path.join(p2p_dir, "include"),
+            {public = true}   -- 🔥 important for reuse
+        )
+
         target:add("cxxflags",
             "-O3",
             "-fPIC",
             "-MMD",
-            -- "-MP",
             "-Wno-pointer-arith",
             "-Wno-sign-compare",
             "-Wno-unused-variable"
         )
 
-        -- target:add("includedirs", path.join(os.scriptdir(), "include"))
-        -- target:add("includedirs", path.join(os.scriptdir(), "rdma"))
-        local p2p_dir = os.scriptdir()
-
-        target:add("includedirs",
-            p2p_dir,                                -- ✅ THIS FIXES rdma/define.h
-            path.join(p2p_dir, "include"),           -- common.h
-            path.join(p2p_dir, "../include")         -- project include (optional)
-        )
-
-        -- -- CUDA
-        -- target:add("includedirs", "/usr/local/cuda/include")
-        -- target:add("linkdirs", "/usr/local/cuda/lib64")
-        -- target:add("links", "cudart", "cuda")
-
-        -- Common system libs
-        -- target:add("links", "pthread", "dl", "z", "elf", "ibverbs")
-
-        -- Feature flags
-        if get_config("use_tcpx") then
-            target:add("defines", "UCCL_P2P_USE_TCPX")
-        elseif get_config("use_efa") then
-            target:add("defines", "UCCL_P2P_USE_EFA")
-            target:add("includedirs", "/opt/amazon/efa/include")
-            target:add("linkdirs", "/opt/amazon/efa/lib")
-            target:add("links", "efa")
-        end
-
-        if get_config("use_tcp") then
-            target:add("defines", "UCCL_P2P_USE_NCCL")
-        end
-
-        if get_config("use_dietgpu") then
-            local dietgpu_root = "../thirdparty/dietgpu"
-            target:add("defines", "USE_DIETGPU")
-            target:add("includedirs", dietgpu_root)
-            target:add("linkdirs", path.join(dietgpu_root, "dietgpu/float"))
-            target:add("links", "dietgpu_float")
-            target:add("rpathdirs", path.join(dietgpu_root, "dietgpu/float"))
-        end
+        target:add("packages", "python")
+        target:add("packages", "nanobind")
     end)
 rule_end()
+
+function apply_p2p_features(target)
+    if get_config("use_tcpx") then
+        target:add("defines", "UCCL_P2P_USE_TCPX")
+    elseif get_config("use_efa") then
+        target:add("defines", "UCCL_P2P_USE_EFA")
+        target:add("includedirs", "/opt/amazon/efa/include")
+        target:add("linkdirs", "/opt/amazon/efa/lib")
+        target:add("links", "efa")
+    end
+
+    if get_config("use_tcp") then
+        target:add("defines", "UCCL_P2P_USE_NCCL")
+    end
+
+    if get_config("use_dietgpu") then
+        local root = "../thirdparty/dietgpu"
+        target:add("defines", "USE_DIETGPU")
+        target:add("includedirs", root)
+        target:add("linkdirs", path.join(root, "dietgpu/float"))
+        target:add("links", "dietgpu_float")
+        target:add("rpathdirs", path.join(root, "dietgpu/float"))
+    end
+end
 
 -- ============================================================================
 -- CORE LIBRARY
@@ -93,23 +86,23 @@ target("uccl_p2p_core")
     set_kind("shared")  -- matches libuccl_p2p.so
     set_targetdir("$(builddir)/lib")
 
-    add_rules("uccl.common", "uccl.backend", "ccl.p2p")
+    add_rules("uccl.common", "uccl.backend", "p2p.base")
+
+    apply_p2p_features(target)
 
     -- this is as in the makefile, leave commented out.
-    -- Sources depending on mode
-    -- if get_config("use_tcpx") then
-    --     add_files("nccl_tcpx_endpoint.cc")
-    --     set_basename("uccl_p2p_tcpx")
-    -- elseif get_config("use_tcp") then
-    --     add_files("engine.cc", "engine_api.cc", "nccl/nccl_endpoint.cc")
-    --     set_basename("uccl_p2p_tcp")
-    -- else
-    --     add_files("engine.cc", "engine_api.cc")
-    --     set_basename("uccl_p2p")
-    -- end
+    if get_config("use_tcpx") then
+        add_files("nccl_tcpx_endpoint.cc")
+        set_basename("uccl_p2p_tcpx")
+    elseif get_config("use_tcp") then
+        add_files("engine.cc", "engine_api.cc", "nccl/nccl_endpoint.cc")
+        set_basename("uccl_p2p_tcp")
+    else
+        add_files("engine.cc", "engine_api.cc")
+        set_basename("uccl_p2p")
+    end
 
     add_files("uccl_engine.cc")
-
 
 -- ============================================================================
 -- PYTHON BINDINGS (nanobind)
