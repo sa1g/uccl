@@ -38,7 +38,7 @@ python setup.py install
 Alternatively, you can build `uccl.ep` wheel for ROCm7 using docker then install:
 ```bash
 # Under uccl
-bash build.sh rocm ep --install
+bash build.sh roc7 ep --install
 ```
 
 ## Test import `uccl.ep`
@@ -132,6 +132,7 @@ Notes:
 | UCCL_IB_MAX_INFLIGHT_LOW_LATENCY | Max inflight writes per GPU/NIC in LL | 32 |
 | UCCL_IB_SL | Service level in RDMA network | 3/8 (IB/EFA) |
 | UCCL_IB_TC | Traffic class in RDMA network | 104/0 (IB/EFA) |
+| UCCL_EP_ENABLE_AGGRESSIVE_ATOMIC | Use relaxed atomics with manual fences instead of acquire/release semantics (AMD only) | 0 (disabled) |
 
 
 ## Results
