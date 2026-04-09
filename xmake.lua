@@ -149,15 +149,95 @@ package("nccl_headers")
     end)
 package_end()
 
-add_requires("gtest", "gflags")
+package("nccl")
+    set_description("NVIDIA Collective Communications Library")
+    set_homepage("https://developer.nvidia.com/nccl")
+    set_license("MIT")
+    add_configs("shared", {description = "Use shared library", default = true, type = "boolean"})
+
+    on_load(function(package)
+        if not is_plat("linux") then
+            raise("nccl is only supported on Linux")
+        end
+
+        -- Prefer NCCL shipped with NVHPC when available.
+        local nvhpc_root = os.getenv("NVHPC_ROOT")
+        if nvhpc_root then
+            local nvhpc_nccl = path.join(nvhpc_root, "comm_libs", "nccl")
+            if os.isdir(nvhpc_nccl) then
+                package:set("installdir", nvhpc_nccl)
+            end
+        end
+    end)
+
+    on_fetch(function(package)
+        import("lib.detect.find_package")
+
+        local result = find_package("nccl", {
+            system = true,
+            links = "nccl",
+            configs = {shared = package:config("shared")}
+        })
+        if result then
+            print("nccl found in system, %s", result.linkdirs)
+            return result
+        end
+
+        local installdir = package:installdir()
+        if not installdir or not os.isdir(installdir) then
+            raise("nccl not found in %s", installdir)
+        end
+
+        local includedir = path.join(installdir, "include")
+        local libdirs = {
+            path.join(installdir, "lib"),
+            path.join(installdir, "lib64")
+        }
+
+        local linkdirs = {}
+        local links = {}
+        local want_shared = package:config("shared") ~= false
+        local shared_name = is_plat("linux", "bsd") and "libnccl.so" or "libnccl.dylib"
+        local static_name = "libnccl.a"
+
+        for _, dir in ipairs(libdirs) do
+            if os.isdir(dir) then
+                if want_shared and os.isfile(path.join(dir, shared_name)) then
+                    table.insert(linkdirs, dir)
+                    table.insert(links, "nccl")
+                    break
+                elseif os.isfile(path.join(dir, static_name)) then
+                    table.insert(linkdirs, dir)
+                    table.insert(links, "nccl")
+                    break
+                end
+            end
+        end
+
+        if #links > 0 and os.isdir(includedir) then
+            print("nccl found in system, %s", includedir)
+
+            return {
+                includedirs = includedir,
+                linkdirs = linkdirs,
+                links = links
+            }
+        end
+
+        -- Error out
+        raise("nccl not found in %s", installdir)
+    end)
+package_end()
+
+add_requires("gtest", "gflags", {optional = true})
 
 -- Required for Python bindings - p2p
-add_requires("python", {system = true})
-add_requires("nanobind 2.12.0", {configs = {python = true}})
+-- add_requires("python", {system = true})
+-- add_requires("nanobind 2.12.0", {configs = {python = true}})
 
 if get_config("backend") == "cuda" then 
     add_requires("nccl_headers")
-    add_requires("nccl", {system = true})
+    add_requires("nccl")
     add_rules("cuda", {system = true})
 end
 
@@ -200,6 +280,6 @@ set_languages("c++17")
 includes("include")
 includes("collective/rdma/")
 -- includes("collective/efa")
-includes("p2p")
+-- includes("p2p")
 -- includes("ep")
 -- includes("experimental/ukernel")

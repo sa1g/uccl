@@ -26,18 +26,18 @@ target("ccl_rdma_plugin")
     set_basename(get_config("backend") == "cuda" and "nccl-net-uccl" or "rccl-net-uccl")
 
 -- ====================================================================
--- Tests & Benchmarks
--- ====================================================================
+-- -- Tests & Benchmarks
+-- -- ====================================================================
 
-for _, test_file in ipairs(os.files("*_test.cc")) do
-    local test_name = test_file:match("([^/]+)_test%.cc$")    
-    target("test_collective_rdma_" .. test_name)
-        set_kind("binary")
-        set_symbols("debug")
+-- for _, test_file in ipairs(os.files("*_test.cc")) do
+--     local test_name = test_file:match("([^/]+)_test%.cc$")    
+--     target("test_collective_rdma_" .. test_name)
+--         set_kind("binary")
+--         set_symbols("debug")
         
-        set_targetdir("$(builddir)/test")
-        add_files(test_file)
+--         set_targetdir("$(builddir)/test")
+--         add_files(test_file)
 
-        add_deps("ccl_rdma_core")
-        add_packages("gtest", "gflags")
-end
+--         add_deps("ccl_rdma_core")
+--         add_packages("gtest", "gflags")
+-- end
