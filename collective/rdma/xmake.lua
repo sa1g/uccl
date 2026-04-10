@@ -1,6 +1,6 @@
 rule("ccl.rdma")
-    on_config(function (target)
-        target:add("cxxflags", "-Wno-pointer-arith", "-Wno-interference-size", "-fPIC", "-MMD")
+    on_config(function (target) 
+        target:add("cxxflags", "-Wno-pointer-arith", "-Wno-interference-size", "-fPIC") --, "-MMD")
     end)
 rule_end()
 

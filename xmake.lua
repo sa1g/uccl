@@ -126,6 +126,7 @@ if is_mode("debug") then
 else
     -- set_symbols("hidden")
     set_optimize("fastest")
+    -- set_symbols("debug")
     set_strip("all")
 end
 
