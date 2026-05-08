@@ -233,8 +233,17 @@ package_end()
 add_requires("gtest", "gflags", {optional = true})
 
 -- Required for Python bindings - p2p
--- add_requires("python", {system = true})
--- add_requires("nanobind 2.12.0", {configs = {python = true}})
+toolchain("gcc_toolchain")
+    set_kind("standalone")
+    set_toolset("cc", "gcc")
+    set_toolset("cxx", "g++")
+toolchain_end()
+
+add_requires("python 3.13")
+
+add_requires("nanobind 2.12.0", {
+    configs = {python = true}
+})
 
 if get_config("backend") == "cuda" then 
     add_requires("nccl_headers")
@@ -279,8 +288,8 @@ set_languages("c++17")
 
 -- Include subdirectories with their own xmake.lua files
 includes("include")
-includes("collective/rdma/")
+-- includes("collective/rdma/")
 -- includes("collective/efa")
--- includes("p2p")
+includes("p2p")
 -- includes("ep")
 -- includes("experimental/ukernel")

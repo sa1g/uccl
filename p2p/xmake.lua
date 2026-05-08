@@ -43,7 +43,7 @@ rule("p2p.base")
         target:add("cxxflags",
             "-O3",
             "-fPIC",
-            "-MMD",
+            -- "-MMD",
             "-Wno-pointer-arith",
             "-Wno-sign-compare",
             "-Wno-unused-variable"
@@ -54,29 +54,36 @@ rule("p2p.base")
     end)
 rule_end()
 
-function apply_p2p_features(target)
-    if get_config("use_tcpx") then
-        target:add("defines", "UCCL_P2P_USE_TCPX")
-    elseif get_config("use_efa") then
-        target:add("defines", "UCCL_P2P_USE_EFA")
-        target:add("includedirs", "/opt/amazon/efa/include")
-        target:add("linkdirs", "/opt/amazon/efa/lib")
-        target:add("links", "efa")
-    end
+rule("p2p.features")
+    on_load(function (target)
+        if get_config("use_tcpx") then
+            target:add("defines", "UCCL_P2P_USE_TCPX")
+            print("<> uccl/p2p: using TCPX transport")
+        elseif get_config("use_efa") then
+            target:add("defines", "UCCL_P2P_USE_EFA")
+            target:add("includedirs", "/opt/amazon/efa/include")
+            target:add("linkdirs", "/opt/amazon/efa/lib")
+            target:add("links", "efa")
+            print("<> uccl/p2p: using EFA transport")
+        end
 
-    if get_config("use_tcp") then
-        target:add("defines", "UCCL_P2P_USE_NCCL")
-    end
+        if get_config("use_tcp") then
+            target:add("defines", "UCCL_P2P_USE_NCCL")
+            print("<> uccl/p2p: using NCCL-over-TCP endpoint")
+        end
 
-    if get_config("use_dietgpu") then
-        local root = "../thirdparty/dietgpu"
-        target:add("defines", "USE_DIETGPU")
-        target:add("includedirs", root)
-        target:add("linkdirs", path.join(root, "dietgpu/float"))
-        target:add("links", "dietgpu_float")
-        target:add("rpathdirs", path.join(root, "dietgpu/float"))
-    end
-end
+        if get_config("use_dietgpu") then
+            local root = "../thirdparty/dietgpu"
+            target:add("defines", "USE_DIETGPU")
+            target:add("includedirs", root)
+            target:add("linkdirs", path.join(root, "dietgpu/float"))
+            target:add("links", "dietgpu_float")
+            target:add("rpathdirs", path.join(root, "dietgpu/float"))
+            print("<> uccl/p2p: using DietGPU compression")
+        end
+    end)
+rule_end()
+
 
 -- ============================================================================
 -- CORE LIBRARY
@@ -86,9 +93,9 @@ target("uccl_p2p_core")
     set_kind("shared")  -- matches libuccl_p2p.so
     set_targetdir("$(builddir)/lib")
 
-    add_rules("uccl.common", "uccl.backend", "p2p.base")
+    add_rules("uccl.common", "uccl.backend", "p2p.base", "p2p.features")
 
-    apply_p2p_features(target)
+    -- apply_p2p_features(target)
 
     -- this is as in the makefile, leave commented out.
     if get_config("use_tcpx") then
