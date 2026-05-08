@@ -1,6 +1,7 @@
-#include "memory/memory_manager.h"
+#include "memory/ipc_manager.h"
+#include "memory/mr_manager.h"
 #include "oob/oob.h"
-#include "request.h"
+#include "oob/shmring_exchanger.h"
 #include "test.h"
 #include "test_utils.h"
 #include <chrono>
@@ -27,42 +28,60 @@ std::string unique_shm_namespace(char const* prefix) {
 }
 
 void test_memory_manager() {
-  using MemoryManager = UKernel::Transport::MemoryManager;
-  using LocalMR = UKernel::Transport::LocalMR;
-  using RemoteMR = UKernel::Transport::RemoteMR;
-  using RemoteIpc = UKernel::Transport::RemoteIpc;
+  using MRManager = UKernel::Transport::MRManager;
+  using MR = UKernel::Transport::MR;
+  using MRItem = UKernel::Transport::MRItem;
+  using IPCItem = UKernel::Transport::IPCItem;
 
-  MemoryManager mm;
+  MRManager mrm;
+  UKernel::Transport::IPCManager ipcm;
   std::vector<uint8_t> buf_a(512, 0x11);
   std::vector<uint8_t> buf_b(1024, 0x22);
 
-  auto tracked_a = mm.register_local(buf_a.data(), buf_a.size());
-  auto tracked_a_again = mm.register_local(buf_a.data(), buf_a.size());
-  auto tracked_b = mm.register_local(buf_b.data(), buf_b.size());
-  LocalMR mr_a = tracked_a.mr;
-  LocalMR mr_a_again = tracked_a_again.mr;
-  LocalMR mr_b = tracked_b.mr;
+  auto tracked_a =
+      mrm.create_local_mr(/*buffer_id=*/11, buf_a.data(), buf_a.size());
+  auto tracked_a_again =
+      mrm.create_local_mr(/*buffer_id=*/11, buf_a.data(), buf_a.size());
+  auto tracked_b =
+      mrm.create_local_mr(/*buffer_id=*/12, buf_b.data(), buf_b.size());
+  MR mr_a = tracked_a.mr;
+  MR mr_a_again = tracked_a_again.mr;
+  MR mr_b = tracked_b.mr;
 
-  require(mr_a.id == mr_a_again.id, "local MR id should be stable");
-  require(mr_a.id != mr_b.id, "different buffers should produce different ids");
-  require(mm.find_local_by_ptr(buf_a.data()).id == mr_a.id,
+  require(tracked_a.buffer_id == tracked_a_again.buffer_id,
+          "local buffer_id should be stable");
+  require(tracked_a.buffer_id != tracked_b.buffer_id,
+          "different buffers should produce different buffer_ids");
+  require(mrm.get_mr(buf_a.data()).buffer_id == tracked_a.buffer_id,
           "exact local MR lookup failed");
-  require(mm.find_local_by_ptr(buf_a.data() + 128).id == mr_a.id,
+  require(mrm.get_mr(buf_a.data() + 128).buffer_id == tracked_a.buffer_id,
           "range-based local MR lookup failed");
-  require(mm.get_local_mr(mr_b.id).address ==
+  require(mrm.get_mr(/*buffer_id=*/tracked_b.buffer_id).mr.address ==
               reinterpret_cast<uint64_t>(buf_b.data()),
-          "MR lookup by id failed");
+          "MR lookup by buffer_id failed");
 
-  RemoteMR remote0{7, 0x1000ULL, 77, 128};
-  RemoteMR remote1{8, 0x2000ULL, 88, 256};
-  RemoteMR remote2{9, 0x3000ULL, 99, 512};
-  mm.cache_remote_mrs(/*remote_rank=*/3, {remote0, remote1});
-  mm.cache_remote_mrs(/*remote_rank=*/3, {remote0, remote1, remote2});
-  require(mm.get_remote_mr(3, remote0.id).address == remote0.address,
+  MR remote0{0x1000ULL, 128, 0, 77};
+  MR remote1{0x2000ULL, 256, 0, 88};
+  MR remote2{0x3000ULL, 512, 0, 99};
+  MRItem ri0{};
+  ri0.buffer_id = 7;
+  ri0.mr = remote0;
+  ri0.valid = true;
+  MRItem ri1{};
+  ri1.buffer_id = 8;
+  ri1.mr = remote1;
+  ri1.valid = true;
+  MRItem ri2{};
+  ri2.buffer_id = 9;
+  ri2.mr = remote2;
+  ri2.valid = true;
+  mrm.register_remote_mrs(/*remote_rank=*/3, {ri0, ri1});
+  mrm.register_remote_mrs(/*remote_rank=*/3, {ri0, ri1, ri2});
+  require(mrm.get_mr(3, ri0.buffer_id).mr.address == remote0.address,
           "cached remote MR lookup for first entry failed");
-  require(mm.get_remote_mr(3, remote1.id).address == remote1.address,
+  require(mrm.get_mr(3, ri1.buffer_id).mr.address == remote1.address,
           "cached remote MR lookup for second entry failed");
-  require(mm.get_remote_mr(3, remote2.id).address == remote2.address,
+  require(mrm.get_mr(3, ri2.buffer_id).mr.address == remote2.address,
           "cached remote MR lookup failed");
 
   gpuIpcMemHandle_t handle{};
@@ -70,91 +89,42 @@ void test_memory_manager() {
   auto* hb = reinterpret_cast<uint8_t*>(&handle);
   hb[0] = 0x5A;
   hb[1] = 0xC3;
-  RemoteIpc cache{};
+  IPCItem cache{};
   cache.handle = handle;
   cache.direct_ptr = reinterpret_cast<void*>(0x1234000ULL);
-  cache.offset = 64;
-  cache.size = 2048;
+  cache.base_offset = 64;
+  cache.bytes = 2048;
   cache.device_idx = 5;
-  require(mm.register_remote_ipc(4, handle, cache),
+  require(ipcm.register_remote_ipc(4, /*buffer_id=*/0, cache),
           "failed to register remote IPC cache");
-  RemoteIpc cached = mm.get_remote_ipc(4, handle);
+  IPCItem cached = ipcm.get_ipc(4, handle);
   require(cached.direct_ptr == cache.direct_ptr &&
-              cached.offset == cache.offset && cached.size == cache.size &&
+              cached.base_offset == cache.base_offset &&
+              cached.bytes == cache.bytes &&
               cached.device_idx == cache.device_idx,
           "remote IPC cache round-trip mismatch");
 
-  auto released_shared_ref = mm.deregister_local(buf_a.data());
-  require(released_shared_ref.mr_id == mr_a.id &&
-              !released_shared_ref.fully_released,
-          "releasing one retained reference should not fully release the MR");
+  require(mrm.delete_mr(/*buffer_id=*/11),
+          "first local MR delete should succeed");
 
-  auto resized = mm.register_local(buf_a.data(), buf_a.size() / 2);
-  require(resized.replaced && resized.replaced_mr_id == mr_a.id,
-          "resized registration should report fully replaced MR");
-  require(resized.mr.id != mr_a.id,
-          "resized registration should allocate a new MR id");
-  require(mm.find_local_by_ptr(buf_a.data()).id == resized.mr.id,
+  auto resized =
+      mrm.create_local_mr(/*buffer_id=*/11, buf_a.data(), buf_a.size() / 2);
+  require(resized.buffer_id == tracked_a.buffer_id,
+          "same buffer_id should keep stable id after resize");
+  require(mrm.get_mr(buf_a.data()).buffer_id == resized.buffer_id,
           "resized exact lookup should resolve to new MR");
-  require(throws([&] {
-            (void)mm.find_local_by_ptr(buf_a.data() + buf_a.size() / 2 + 1);
-          }),
+  require(!mrm.get_mr(buf_a.data() + buf_a.size() / 2 + 1).valid,
           "lookup beyond resized range should fail");
 
-  auto released = mm.deregister_local(buf_a.data());
-  require(released.mr_id == resized.mr.id && released.fully_released,
-          "release_local_buffer should return the fully released MR id");
-  require(throws([&] { (void)mm.find_local_by_ptr(buf_a.data()); }),
+  require(mrm.delete_mr(/*buffer_id=*/11),
+          "resized local MR delete should succeed");
+  require(!mrm.get_mr(buf_a.data()).valid,
           "released local buffer should not be queryable");
 
-  auto released_a_once = mm.deregister_local(buf_a.data());
-  require(released_a_once.mr_id == 0,
+  require(!mrm.delete_mr(/*buffer_id=*/11),
           "released resized buffer should no longer be tracked");
 
-  auto released_b_once = mm.deregister_local(buf_b.data());
-  require(released_b_once.mr_id == mr_b.id && released_b_once.fully_released,
-          "single-use MR should be fully released on first release");
-}
-
-void test_request_completion() {
-  using Request = UKernel::Transport::Request;
-  using RequestState = UKernel::Transport::RequestState;
-  using RequestType = UKernel::Transport::RequestType;
-
-  Request req_single(/*id=*/11, /*match_seq=*/101,
-                     /*buffer=*/reinterpret_cast<void*>(0x1000),
-                     /*size_bytes=*/64, UKernel::Transport::RemoteSlice{},
-                     RequestType::Send);
-  req_single.mark_queued(1);
-  req_single.mark_running();
-  req_single.complete_one();
-  require(req_single.load_state(std::memory_order_acquire) ==
-              RequestState::Completed,
-          "single-signal request should complete immediately");
-
-  Request req_multi(/*id=*/12, /*match_seq=*/202,
-                    /*buffer=*/reinterpret_cast<void*>(0x2000),
-                    /*size_bytes=*/128, UKernel::Transport::RemoteSlice{},
-                    RequestType::Recv);
-  req_multi.mark_queued(2);
-  req_multi.mark_running();
-  req_multi.complete_one();
-  require(!req_multi.is_finished(std::memory_order_acquire),
-          "request should not complete before final signal");
-  req_multi.complete_one();
-  require(req_multi.load_state(std::memory_order_acquire) ==
-              RequestState::Completed,
-          "request should complete on final signal");
-
-  Request req_failed(/*id=*/13, /*match_seq=*/303,
-                     /*buffer=*/reinterpret_cast<void*>(0x3000),
-                     /*size_bytes=*/64, UKernel::Transport::RemoteSlice{},
-                     RequestType::Recv);
-  req_failed.mark_queued(1);
-  req_failed.mark_running();
-  req_failed.mark_failed();
-  require(req_failed.has_failed(std::memory_order_acquire),
-          "failed request should report terminal failure");
+  require(mrm.delete_mr(/*buffer_id=*/12), "single-use MR should be deletable");
 }
 
 void test_peer_transport_kind() {
@@ -325,6 +295,5 @@ void test_shm_dual_waiters() {
 
 void test_transport_core() {
   run_case("transport unit", "memory manager", test_memory_manager);
-  run_case("transport unit", "request completion", test_request_completion);
   run_case("transport unit", "peer transport kind", test_peer_transport_kind);
 }

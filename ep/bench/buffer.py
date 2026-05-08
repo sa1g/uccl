@@ -65,7 +65,7 @@ class Buffer:
         allow_nvlink_for_low_latency_mode: bool = True,
         allow_mnnvl: bool = False,
         explicitly_destroy: bool = False,
-        is_intranode: bool = False,
+        is_intranode: Optional[bool] = None,
     ) -> None:
         """
         Initialize the communication buffer.
@@ -85,6 +85,8 @@ class Buffer:
             explicitly_destroy: If this flag is set to True, you need to explicitly call `destroy()` to release resources;
                 otherwise, the resources will be released by the destructor.
                 Note: Releasing resources in the destructor may cause Python's exception handling process to hang.
+            is_intranode: whether to force intranode-only proxy mode. If set to `None`, infer it from the
+                process-group topology automatically. Explicit `True` is rejected when the group spans multiple nodes.
         """
         if "LOCAL_RANK" in os.environ:
             device_index = int(os.environ["LOCAL_RANK"])
@@ -130,6 +132,7 @@ class Buffer:
                 )
 
         rdma_buffer_ptr = self.scratch.data_ptr()
+        _local_world = int(os.environ.get("LOCAL_WORLD_SIZE", -1))
         self.proxies, self.workers = initialize_uccl(
             rdma_buffer_ptr,
             num_rdma_bytes,
@@ -158,7 +161,7 @@ class Buffer:
             num_rdma_bytes,
             low_latency_mode,
             explicitly_destroy,
-            int(os.environ.get("LOCAL_WORLD_SIZE", -1)),
+            _local_world,
         )
         if num_rdma_bytes:
             self.runtime.set_rdma_buffer(rdma_buffer_ptr, rdma_buffer_is_host_allocated)
@@ -232,6 +235,10 @@ class Buffer:
     @staticmethod
     def is_sm90_compiled():
         return ep.is_sm90_compiled()
+
+    @staticmethod
+    def _is_efa() -> bool:
+        return os.path.exists(os.getenv("EFA_HOME", "/opt/amazon/efa"))
 
     @staticmethod
     def set_num_sms(new_num_sms: int) -> None:
@@ -690,9 +697,9 @@ class Buffer:
             2: Config(Buffer.num_sms, 24, 256, 6, 128),
             4: Config(Buffer.num_sms, 6, 256, 6, 128),
             8: Config(Buffer.num_sms, 6, 256, 6, 128),
-            16: Config(Buffer.num_sms, 36, 288, 20, 128),
+            16: Config(Buffer.num_sms, 36, 288, 20, 512 if Buffer._is_efa() else 128),
             24: Config(Buffer.num_sms, 8, 288, 32, 128),
-            32: Config(Buffer.num_sms, 32, 288, 32, 128),
+            32: Config(Buffer.num_sms, 32, 288, 32, 512 if Buffer._is_efa() else 128),
             64: Config(Buffer.num_sms, 20, 288, 28, 128),
             128: Config(Buffer.num_sms, 20, 560, 32, 128),
             144: Config(Buffer.num_sms, 32, 720, 12, 128),
@@ -718,9 +725,9 @@ class Buffer:
             2: Config(Buffer.num_sms, 10, 256, 6, 128),
             4: Config(Buffer.num_sms, 9, 256, 6, 128),
             8: Config(Buffer.num_sms, 4, 256, 6, 128),
-            16: Config(Buffer.num_sms, 4, 288, 12, 128),
+            16: Config(Buffer.num_sms, 4, 288, 12, 512 if Buffer._is_efa() else 128),
             24: Config(Buffer.num_sms, 1, 288, 8, 128),
-            32: Config(Buffer.num_sms, 1, 288, 8, 128),
+            32: Config(Buffer.num_sms, 1, 288, 8, 512 if Buffer._is_efa() else 128),
             64: Config(Buffer.num_sms, 1, 288, 20, 128),
             128: Config(Buffer.num_sms, 1, 560, 12, 128),
             144: Config(Buffer.num_sms, 2, 720, 8, 128),
@@ -807,12 +814,27 @@ class Buffer:
             allocate_on_comm_stream,
             self._ll_compute_stream_ptr(topk_idx.device),
         )
+        previous_tensors_to_record = (
+            ()
+            if previous_event is None or previous_event.extra_tensors is None
+            else previous_event.extra_tensors
+        )
+        tensors_to_record = previous_tensors_to_record + (
+            topk_idx,
+            num_tokens_per_rank,
+            num_tokens_per_rdma_rank,
+            num_tokens_per_expert,
+            is_token_in_rank,
+        )
         return (
             num_tokens_per_rank,
             num_tokens_per_rdma_rank,
             num_tokens_per_expert,
             is_token_in_rank,
-            EventOverlap(event),
+            EventOverlap(
+                event,
+                tensors_to_record if async_finish else None,
+            ),
         )
 
     # noinspection PyTypeChecker
@@ -909,11 +931,11 @@ class Buffer:
                 rank_prefix_matrix,
                 channel_prefix_matrix,
                 recv_channel_prefix_matrix,
+                num_recv_tokens,
                 recv_src_idx,
                 is_token_in_rank,
                 send_head,
             ) = handle
-            num_recv_tokens = recv_src_idx.size(0)
             num_topk = 0
             num_scales = (
                 0
@@ -922,6 +944,7 @@ class Buffer:
             )
             scale_token_stride = 0 if x_scales is None else int(x_scales.stride(0))
             scale_hidden_stride = 0 if x_scales is None else int(x_scales.stride(1))
+            alloc_recv_tokens = max(num_recv_tokens, 1)
             alloc_ctx = (
                 torch.cuda.stream(self.get_comm_stream())
                 if allocate_on_comm_stream
@@ -929,16 +952,16 @@ class Buffer:
             )
             with alloc_ctx:
                 recv_x = torch.empty(
-                    (num_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
+                    (alloc_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
                 )
                 recv_x_scales = (
                     None
                     if x_scales is None
                     else torch.empty(
                         (
-                            (num_recv_tokens,)
+                            (alloc_recv_tokens,)
                             if x_scales.dim() == 1
-                            else (num_recv_tokens, num_scales)
+                            else (alloc_recv_tokens, num_scales)
                         ),
                         device=x.device,
                         dtype=x_scales.dtype,
@@ -971,10 +994,25 @@ class Buffer:
                 recv_channel_prefix_matrix.data_ptr(),
                 recv_src_idx.data_ptr(),
                 send_head.data_ptr(),
-                None,
+                getattr(previous_event, "event", None),
                 async_finish,
                 allocate_on_comm_stream,
                 self._ll_compute_stream_ptr(x.device),
+            )
+            recv_x = recv_x[:num_recv_tokens]
+            if recv_x_scales is not None:
+                recv_x_scales = recv_x_scales[:num_recv_tokens]
+            previous_tensors_to_record = (
+                ()
+                if previous_event is None or previous_event.extra_tensors is None
+                else previous_event.extra_tensors
+            )
+            tensors_to_record = previous_tensors_to_record + (
+                x,
+                x_scales,
+                handle,
+                recv_x,
+                recv_x_scales,
             )
             return (
                 (recv_x, recv_x_scales) if x_scales is not None else recv_x,
@@ -982,7 +1020,10 @@ class Buffer:
                 None,
                 None,
                 None,
-                EventOverlap(event),
+                EventOverlap(
+                    event,
+                    tensors_to_record if async_finish else None,
+                ),
             )
         else:
             assert (
@@ -1022,6 +1063,7 @@ class Buffer:
             )
             scale_token_stride = 0 if x_scales is None else int(x_scales.stride(0))
             scale_hidden_stride = 0 if x_scales is None else int(x_scales.stride(1))
+            alloc_recv_tokens = max(num_recv_tokens, 1)
             alloc_ctx = (
                 torch.cuda.stream(self.get_comm_stream())
                 if allocate_on_comm_stream
@@ -1029,10 +1071,10 @@ class Buffer:
             )
             with alloc_ctx:
                 recv_x = torch.empty(
-                    (num_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
+                    (alloc_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
                 )
                 recv_src_idx = torch.empty(
-                    (num_recv_tokens,), dtype=torch.int32, device=x.device
+                    (alloc_recv_tokens,), dtype=torch.int32, device=x.device
                 )
                 recv_channel_prefix_matrix = torch.empty(
                     (self.group_size, num_channels), dtype=torch.int32, device=x.device
@@ -1044,12 +1086,12 @@ class Buffer:
                 recv_topk_weights = None
                 if topk_idx is not None:
                     recv_topk_idx = torch.empty(
-                        (num_recv_tokens, topk_idx.size(1)),
+                        (alloc_recv_tokens, topk_idx.size(1)),
                         dtype=topk_idx.dtype,
                         device=x.device,
                     )
                     recv_topk_weights = torch.empty(
-                        (num_recv_tokens, topk_weights.size(1)),
+                        (alloc_recv_tokens, topk_weights.size(1)),
                         dtype=topk_weights.dtype,
                         device=x.device,
                     )
@@ -1058,9 +1100,9 @@ class Buffer:
                     if x_scales is None
                     else torch.empty(
                         (
-                            (num_recv_tokens,)
+                            (alloc_recv_tokens,)
                             if x_scales.dim() == 1
-                            else (num_recv_tokens, num_scales)
+                            else (alloc_recv_tokens, num_scales)
                         ),
                         device=x.device,
                         dtype=x_scales.dtype,
@@ -1098,13 +1140,43 @@ class Buffer:
                 allocate_on_comm_stream,
                 self._ll_compute_stream_ptr(x.device),
             )
+            recv_x = recv_x[:num_recv_tokens]
+            recv_src_idx = recv_src_idx[:num_recv_tokens]
+            if recv_topk_idx is not None:
+                recv_topk_idx = recv_topk_idx[:num_recv_tokens]
+            if recv_topk_weights is not None:
+                recv_topk_weights = recv_topk_weights[:num_recv_tokens]
+            if recv_x_scales is not None:
+                recv_x_scales = recv_x_scales[:num_recv_tokens]
             handle = (
                 rank_prefix_matrix,
                 channel_prefix_matrix,
                 recv_channel_prefix_matrix,
-                recv_src_idx,
+                # Keep the logical count separate from the storage tensor so
+                # cached dispatch avoids a GPU sync while cached combine still
+                # gets a valid src_idx pointer when the count is 0.
+                num_recv_tokens,
+                recv_src_idx if num_recv_tokens > 0 else recv_src_idx.new_empty((1,)),
                 is_token_in_rank,
                 send_head,
+            )
+            previous_tensors_to_record = (
+                ()
+                if previous_event is None or previous_event.extra_tensors is None
+                else previous_event.extra_tensors
+            )
+            tensors_to_record = previous_tensors_to_record + (
+                x,
+                x_scales,
+                topk_idx,
+                topk_weights,
+                num_tokens_per_rank,
+                num_tokens_per_expert,
+                handle,
+                recv_x,
+                recv_x_scales,
+                recv_topk_idx,
+                recv_topk_weights,
             )
             return (
                 (recv_x, recv_x_scales) if x_scales is not None else recv_x,
@@ -1112,7 +1184,10 @@ class Buffer:
                 recv_topk_weights,
                 num_recv_tokens_per_expert_list,
                 handle,
-                EventOverlap(event),
+                EventOverlap(
+                    event,
+                    tensors_to_record if async_finish else None,
+                ),
             )
 
     # noinspection PyTypeChecker
@@ -1169,6 +1244,7 @@ class Buffer:
             rank_prefix_matrix,
             _,
             channel_prefix_matrix,
+            _,
             src_idx,
             is_recv_token_in_rank,
             send_head,
@@ -1178,6 +1254,18 @@ class Buffer:
         # Launch the kernel
         num_recv_tokens = send_head.size(0)
         num_topk = 0 if topk_weights is None else int(topk_weights.size(1))
+        num_x_rows = x.size(0)
+        if num_x_rows == 0:
+            x = x.new_empty((1, x.size(1)))
+        if src_idx.size(0) == 0:
+            src_idx = src_idx.new_empty(
+                (1,), dtype=src_idx.dtype, device=src_idx.device
+            )
+        if topk_weights is not None and topk_weights.size(0) == 0:
+            topk_weights = topk_weights.new_empty(
+                (1, num_topk), dtype=topk_weights.dtype, device=topk_weights.device
+            )
+        alloc_recv_tokens = max(num_recv_tokens, 1)
         alloc_ctx = (
             torch.cuda.stream(self.get_comm_stream())
             if allocate_on_comm_stream
@@ -1185,20 +1273,20 @@ class Buffer:
         )
         with alloc_ctx:
             recv_x = torch.empty(
-                (num_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
+                (alloc_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
             )
             recv_topk_weights = (
                 None
                 if topk_weights is None
                 else torch.empty(
-                    (num_recv_tokens, num_topk),
+                    (alloc_recv_tokens, num_topk),
                     device=x.device,
                     dtype=topk_weights.dtype,
                 )
             )
         event = self.runtime.intranode_combine(
             x.data_ptr(),
-            x.size(0),
+            num_x_rows,
             x.size(1),
             Buffer._dtype_code(x.dtype),
             x.element_size(),
@@ -1219,7 +1307,31 @@ class Buffer:
             allocate_on_comm_stream,
             self._ll_compute_stream_ptr(x.device),
         )
-        return recv_x, recv_topk_weights, EventOverlap(event)
+        recv_x = recv_x[:num_recv_tokens]
+        if recv_topk_weights is not None:
+            recv_topk_weights = recv_topk_weights[:num_recv_tokens]
+        previous_tensors_to_record = (
+            ()
+            if previous_event is None or previous_event.extra_tensors is None
+            else previous_event.extra_tensors
+        )
+        tensors_to_record = previous_tensors_to_record + (
+            x,
+            topk_weights,
+            bias_0,
+            bias_1,
+            handle,
+            recv_x,
+            recv_topk_weights,
+        )
+        return (
+            recv_x,
+            recv_topk_weights,
+            EventOverlap(
+                event,
+                tensors_to_record if async_finish else None,
+            ),
+        )
 
     # noinspection PyTypeChecker
     def internode_dispatch(
@@ -1271,12 +1383,15 @@ class Buffer:
                 recv_rdma_rank_prefix_sum,
                 recv_gbl_channel_prefix_matrix,
                 recv_gbl_rank_prefix_sum,
+                num_recv_tokens,
+                num_rdma_recv_tokens,
                 recv_src_meta,
                 send_rdma_head,
                 send_nvl_head,
             ) = handle
-            num_recv_tokens = recv_src_meta.size(0)
-            num_rdma_recv_tokens = send_nvl_head.size(0)
+            # Allocate at least 1 row so data_ptr() is never null (zero-token ranks
+            # produce empty tensors whose data_ptr()==0, which trips C++ assertions).
+            alloc_recv_tokens = max(num_recv_tokens, 1)
             alloc_ctx = (
                 torch.cuda.stream(self.get_comm_stream())
                 if allocate_on_comm_stream
@@ -1284,16 +1399,16 @@ class Buffer:
             )
             with alloc_ctx:
                 recv_x = torch.empty(
-                    (num_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
+                    (alloc_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
                 )
                 recv_x_scales = (
                     None
                     if x_scales is None
                     else torch.empty(
                         (
-                            (num_recv_tokens,)
+                            (alloc_recv_tokens,)
                             if x_scales.dim() == 1
-                            else (num_recv_tokens, num_scales)
+                            else (alloc_recv_tokens, num_scales)
                         ),
                         device=x.device,
                         dtype=x_scales.dtype,
@@ -1335,13 +1450,32 @@ class Buffer:
                 allocate_on_comm_stream,
                 self._ll_compute_stream_ptr(x.device),
             )
+            previous_tensors_to_record = (
+                ()
+                if previous_event is None or previous_event.extra_tensors is None
+                else previous_event.extra_tensors
+            )
+            tensors_to_record = previous_tensors_to_record + (
+                x,
+                x_scales,
+                handle,
+                recv_x,
+                recv_x_scales,
+            )
+            # Slice back to the real number of received tokens.
+            recv_x = recv_x[:num_recv_tokens]
+            if recv_x_scales is not None:
+                recv_x_scales = recv_x_scales[:num_recv_tokens]
             return (
                 (recv_x, recv_x_scales) if x_scales is not None else recv_x,
                 None,
                 None,
                 None,
                 None,
-                EventOverlap(event),
+                EventOverlap(
+                    event,
+                    tensors_to_record if async_finish else None,
+                ),
             )
         else:
             assert (
@@ -1390,6 +1524,10 @@ class Buffer:
                 False,
                 self._ll_compute_stream_ptr(x.device),
             )
+            # Allocate at least 1 row so data_ptr() is never null (zero-token ranks
+            # produce empty tensors whose data_ptr()==0, which trips C++ assertions).
+            alloc_recv_tokens = max(num_recv_tokens, 1)
+            alloc_rdma_recv_tokens = max(num_rdma_recv_tokens, 1)
             alloc_ctx = (
                 torch.cuda.stream(self.get_comm_stream())
                 if allocate_on_comm_stream
@@ -1397,16 +1535,16 @@ class Buffer:
             )
             with alloc_ctx:
                 recv_x = torch.empty(
-                    (num_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
+                    (alloc_recv_tokens, x.size(1)), device=x.device, dtype=x.dtype
                 )
                 recv_x_scales = (
                     None
                     if x_scales is None
                     else torch.empty(
                         (
-                            (num_recv_tokens,)
+                            (alloc_recv_tokens,)
                             if x_scales.dim() == 1
-                            else (num_recv_tokens, num_scales)
+                            else (alloc_recv_tokens, num_scales)
                         ),
                         device=x.device,
                         dtype=x_scales.dtype,
@@ -1416,7 +1554,7 @@ class Buffer:
                     None
                     if topk_idx is None
                     else torch.empty(
-                        (num_recv_tokens, topk_idx.size(1)),
+                        (alloc_recv_tokens, topk_idx.size(1)),
                         dtype=topk_idx.dtype,
                         device=x.device,
                     )
@@ -1425,13 +1563,13 @@ class Buffer:
                     None
                     if topk_weights is None
                     else torch.empty(
-                        (num_recv_tokens, topk_weights.size(1)),
+                        (alloc_recv_tokens, topk_weights.size(1)),
                         dtype=topk_weights.dtype,
                         device=x.device,
                     )
                 )
                 recv_src_meta = torch.empty(
-                    (num_recv_tokens, self.runtime.get_source_meta_bytes()),
+                    (alloc_recv_tokens, self.runtime.get_source_meta_bytes()),
                     dtype=torch.uint8,
                     device=x.device,
                 )
@@ -1445,7 +1583,7 @@ class Buffer:
                     (x.size(0), num_rdma_ranks), dtype=torch.int32, device=x.device
                 )
                 send_nvl_head = torch.empty(
-                    (num_rdma_recv_tokens, self.runtime.get_num_max_nvl_peers()),
+                    (alloc_rdma_recv_tokens, self.runtime.get_num_max_nvl_peers()),
                     dtype=torch.int32,
                     device=x.device,
                 )
@@ -1485,6 +1623,18 @@ class Buffer:
                 allocate_on_comm_stream,
                 self._ll_compute_stream_ptr(x.device),
             )
+            # Slice recv tensors back to the real number of received tokens.
+            recv_x = recv_x[:num_recv_tokens]
+            if recv_x_scales is not None:
+                recv_x_scales = recv_x_scales[:num_recv_tokens]
+            if recv_topk_idx is not None:
+                recv_topk_idx = recv_topk_idx[:num_recv_tokens]
+            if recv_topk_weights is not None:
+                recv_topk_weights = recv_topk_weights[:num_recv_tokens]
+            recv_src_meta = recv_src_meta[:num_recv_tokens]
+            # Keep at least 1 row so data_ptr() is never null (zero-token combine
+            # assertion guard, matching the alloc_rdma_recv_tokens pattern above).
+            send_nvl_head = send_nvl_head[: max(num_rdma_recv_tokens, 1)]
             handle = (
                 is_token_in_rank,
                 rdma_channel_prefix_matrix,
@@ -1493,9 +1643,30 @@ class Buffer:
                 recv_rdma_rank_prefix_sum,
                 recv_gbl_channel_prefix_matrix,
                 recv_gbl_rank_prefix_sum,
+                num_recv_tokens,
+                num_rdma_recv_tokens,
                 recv_src_meta,
                 send_rdma_head,
                 send_nvl_head,
+            )
+            previous_tensors_to_record = (
+                ()
+                if previous_event is None or previous_event.extra_tensors is None
+                else previous_event.extra_tensors
+            )
+            tensors_to_record = previous_tensors_to_record + (
+                x,
+                x_scales,
+                topk_idx,
+                topk_weights,
+                num_tokens_per_rank,
+                num_tokens_per_rdma_rank,
+                num_tokens_per_expert,
+                handle,
+                recv_x,
+                recv_x_scales,
+                recv_topk_idx,
+                recv_topk_weights,
             )
             return (
                 (recv_x, recv_x_scales) if x_scales is not None else recv_x,
@@ -1503,7 +1674,10 @@ class Buffer:
                 recv_topk_weights,
                 num_recv_tokens_per_expert_list,
                 handle,
-                EventOverlap(event),
+                EventOverlap(
+                    event,
+                    tensors_to_record if async_finish else None,
+                ),
             )
 
     # noinspection PyTypeChecker
@@ -1533,6 +1707,8 @@ class Buffer:
             rdma_rank_prefix_sum,
             gbl_channel_prefix_matrix,
             gbl_rank_prefix_sum,
+            _,
+            _,
             src_meta,
             send_rdma_head,
             send_nvl_head,
@@ -1541,6 +1717,16 @@ class Buffer:
 
         num_combined_tokens = int(is_combined_token_in_rank.size(0))
         num_topk = 0 if topk_weights is None else int(topk_weights.size(1))
+
+        # Allocate at least 1 row so data_ptr() is never null (zero-token ranks
+        # produce empty tensors whose data_ptr()==0, which trips C++ assertions).
+        alloc_combined_tokens = max(num_combined_tokens, 1)
+        num_x_rows = x.size(0)
+        if num_x_rows == 0:
+            x = x.new_empty((1, x.size(1)))
+        if src_meta.size(0) == 0:
+            src_meta = src_meta.new_empty((1,) + src_meta.shape[1:])
+
         alloc_ctx = (
             torch.cuda.stream(self.get_comm_stream())
             if allocate_on_comm_stream
@@ -1548,20 +1734,20 @@ class Buffer:
         )
         with alloc_ctx:
             combined_x = torch.empty(
-                (num_combined_tokens, x.size(1)), device=x.device, dtype=x.dtype
+                (alloc_combined_tokens, x.size(1)), device=x.device, dtype=x.dtype
             )
             combined_topk_weights = (
                 None
                 if topk_weights is None
                 else torch.empty(
-                    (num_combined_tokens, num_topk),
+                    (alloc_combined_tokens, num_topk),
                     device=x.device,
                     dtype=topk_weights.dtype,
                 )
             )
         event = self.runtime.internode_combine(
             x.data_ptr(),
-            x.size(0),
+            num_x_rows,
             x.size(1),
             Buffer._dtype_code(x.dtype),
             x.element_size(),
@@ -1585,7 +1771,32 @@ class Buffer:
             allocate_on_comm_stream,
             self._ll_compute_stream_ptr(x.device),
         )
-        return combined_x, combined_topk_weights, EventOverlap(event)
+        # Slice back to the real number of combined tokens.
+        combined_x = combined_x[:num_combined_tokens]
+        if combined_topk_weights is not None:
+            combined_topk_weights = combined_topk_weights[:num_combined_tokens]
+        previous_tensors_to_record = (
+            ()
+            if previous_event is None or previous_event.extra_tensors is None
+            else previous_event.extra_tensors
+        )
+        tensors_to_record = previous_tensors_to_record + (
+            x,
+            topk_weights,
+            bias_0,
+            bias_1,
+            handle,
+            combined_x,
+            combined_topk_weights,
+        )
+        return (
+            combined_x,
+            combined_topk_weights,
+            EventOverlap(
+                event,
+                tensors_to_record if async_finish else None,
+            ),
+        )
 
     def clean_low_latency_buffer(
         self, num_max_dispatch_tokens_per_rank: int, hidden: int, num_experts: int
