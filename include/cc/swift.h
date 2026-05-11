@@ -52,20 +52,18 @@ class SwiftCC {
   static constexpr double kFSRange = 5 * kBaseDelay;
   static constexpr double kFSMinCwnd = 32;   // in MTU-sized packets
   static constexpr double kFSMaxCwnd = 100;  // in MTU-sized packets
-  #ifndef __NVCOMPILER
-  static constexpr double kFSAlpha = kFSRange / ((1.0 / std::sqrt(kFSMinCwnd)) -
-                                                 (1.0 / std::sqrt(kFSMaxCwnd)));
-  static constexpr double kFSBeta = -kFSAlpha / std::sqrt(kFSMaxCwnd);
-  #else
+  
   inline double getFSAlpha() const {
-    return kFSRange / ((1.0 / std::sqrt(kFSMinCwnd)) - 
-                        (1.0 / std::sqrt(kFSMaxCwnd)));
+    static const double v =
+        kFSRange / ((1.0 / std::sqrt(kFSMinCwnd)) -
+                    (1.0 / std::sqrt(kFSMaxCwnd)));
+    return v;
   }
 
   inline double getFSBeta() const {
       return -getFSAlpha() / std::sqrt(kFSMaxCwnd);
   }
-  #endif // __NVCOMPILER
+  
   double rate_ = 0.0;  ///< The current sending rate
   size_t last_decrease_tsc_ = 0;
   double rtt_ = kBaseDelay;
@@ -136,11 +134,7 @@ class SwiftCC {
   }
 
   double get_target_delay() const {
-    #ifndef __NVCOMPILER
-    double fs_delay = kFSAlpha / std::sqrt(prev_cwnd_ / kMSS) + kFSBeta;
-    #else
     double fs_delay = getFSAlpha() / std::sqrt(prev_cwnd_ / kMSS) + getFSBeta();
-    #endif // __NVCOMPILER
 
     if (fs_delay > kFSRange) {
       fs_delay = kFSRange;

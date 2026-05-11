@@ -9,7 +9,7 @@
 -- Examples:
 --   xmake config --backend=cuda --build_type=all
 --   xmake build                   # Build all C++ libs
---   xmake build p2p_py            # Build P2P library + bindings
+--   xmake build p2p               # Build the P2P shared library
 --   xmake build --tests p2p_test  # Build P2P tests only
 --
 
@@ -232,15 +232,7 @@ package_end()
 
 add_requires("gtest", "gflags", {optional = true})
 
--- Required for Python bindings - p2p
-toolchain("gcc_toolchain")
-    set_kind("standalone")
-    set_toolset("cc", "gcc")
-    set_toolset("cxx", "g++")
-toolchain_end()
-
-add_requires("python 3.13")
-
+add_requires("python 3.14.3")
 add_requires("nanobind 2.12.0", {
     configs = {python = true}
 })
