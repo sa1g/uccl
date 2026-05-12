@@ -161,12 +161,34 @@ package("nccl")
             raise("nccl is only supported on Linux")
         end
 
-        -- Prefer NCCL shipped with NVHPC when available.
+        -- Prefer NCCL shipped with NVHPC when available
         local nvhpc_root = os.getenv("NVHPC_ROOT")
         if nvhpc_root then
             local nvhpc_nccl = path.join(nvhpc_root, "comm_libs", "nccl")
             if os.isdir(nvhpc_nccl) then
                 package:set("installdir", nvhpc_nccl)
+                return
+            end
+        end
+
+        -- Check for CUDA path (common location for NCCL)
+        local cuda_path = os.getenv("CUDA_PATH") or os.getenv("CUDA_HOME") or "/usr/local/cuda"
+        local cuda_nccl = path.join(cuda_path, "targets", "x86_64-linux")
+        if os.isdir(path.join(cuda_nccl, "include", "nccl.h")) then
+            package:set("installdir", cuda_nccl)
+            return
+        end
+
+        -- Try well-known system paths as fallback
+        local system_paths = {
+            "/usr",
+            "/usr/local",
+        }
+        
+        for _, syspath in ipairs(system_paths) do
+            if os.isdir(path.join(syspath, "include", "nccl.h")) then
+                package:set("installdir", syspath)
+                return
             end
         end
     end)
@@ -174,39 +196,75 @@ package("nccl")
     on_fetch(function(package)
         import("lib.detect.find_package")
 
-        local result = find_package("nccl", {
+        -- First try pkg-config if available (handles Debian/Arch system packages)
+        local pkg_config_result = nil
+        local has_pkg_config = os.isfile("/usr/bin/pkg-config") or os.isfile("/usr/local/bin/pkg-config") or os.getenv("PKG_CONFIG_PATH")
+        
+        if has_pkg_config then
+            pkg_config_result = find_package("nccl", {pkgconfig = "nccl"})
+            if pkg_config_result then
+                print("nccl found via pkg-config")
+                return pkg_config_result
+            end
+        end
+
+        -- Try system package detection
+        local system_result = find_package("nccl", {
             system = true,
             links = "nccl",
             configs = {shared = package:config("shared")}
         })
-        if result then
-            print("nccl found in system, %s", result.linkdirs)
-            return result
+        
+        if system_result then
+            print("nccl found in system, %s", table.concat(system_result.linkdirs or {}, ", "))
+            return system_result
         end
 
+        -- Manual detection in installdir
         local installdir = package:installdir()
         if not installdir or not os.isdir(installdir) then
-            raise("nccl not found in %s", installdir)
+            raise("nccl not found - please install NCCL via system package manager (e.g., 'sudo apt install libnccl2 libnccl-dev' on Debian/Ubuntu, 'sudo pacman -S nccl' on Arch) or set NVHPC_ROOT/CUDA_PATH")
         end
 
-        local includedir = path.join(installdir, "include")
+        -- Determine include path
+        local includedirs = {}
+        local possible_include_dirs = {
+            path.join(installdir, "include"),
+            path.join(installdir, "targets", "x86_64-linux", "include"),
+        }
+        
+        for _, incdir in ipairs(possible_include_dirs) do
+            if os.isdir(incdir) and os.isfile(path.join(incdir, "nccl.h")) then
+                table.insert(includedirs, incdir)
+                break
+            end
+        end
+
+        -- Determine library paths
         local libdirs = {
             path.join(installdir, "lib"),
-            path.join(installdir, "lib64")
+            path.join(installdir, "lib64"),
+            path.join(installdir, "lib", "x86_64-linux-gnu"),
+            path.join(installdir, "targets", "x86_64-linux", "lib"),
         }
 
         local linkdirs = {}
         local links = {}
         local want_shared = package:config("shared") ~= false
-        local shared_name = is_plat("linux", "bsd") and "libnccl.so" or "libnccl.dylib"
+        local shared_names = {"libnccl.so", "libnccl.so.2", "libnccl.so.2.0.0"}
         local static_name = "libnccl.a"
 
         for _, dir in ipairs(libdirs) do
             if os.isdir(dir) then
-                if want_shared and os.isfile(path.join(dir, shared_name)) then
-                    table.insert(linkdirs, dir)
-                    table.insert(links, "nccl")
-                    break
+                if want_shared then
+                    for _, shared_name in ipairs(shared_names) do
+                        if os.isfile(path.join(dir, shared_name)) then
+                            table.insert(linkdirs, dir)
+                            table.insert(links, "nccl")
+                            break
+                        end
+                    end
+                    if #links > 0 then break end
                 elseif os.isfile(path.join(dir, static_name)) then
                     table.insert(linkdirs, dir)
                     table.insert(links, "nccl")
@@ -215,18 +273,20 @@ package("nccl")
             end
         end
 
-        if #links > 0 and os.isdir(includedir) then
-            print("nccl found in system, %s", includedir)
-
+        if #links > 0 and #includedirs > 0 then
+            print("nccl found in %s", installdir)
             return {
-                includedirs = includedir,
+                includedirs = includedirs,
                 linkdirs = linkdirs,
                 links = links
             }
         end
 
-        -- Error out
-        raise("nccl not found in %s", installdir)
+        -- Error with helpful message
+        raise("nccl not found in %s (checked:\n  includes: %s\n  libs: %s)", 
+              installdir, 
+              table.concat(possible_include_dirs, ", "), 
+              table.concat(libdirs, ", "))
     end)
 package_end()
 

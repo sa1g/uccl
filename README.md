@@ -22,11 +22,19 @@ Tested with `nvc++`, `gcc`. It has a code patch to support `nvc++` compilation.
 > [!IMPORTANT]
 > Requires `xmake`
 
+> [!IMPORTANT]
+> Required libraries:
+>
+> - cuda
+> - nccl
+> - ibverbs
+>   Probably some others, I'll update this when I have time to check the deps.
+
 > [!WARNING]
 > If compiling with nvc++ you need to call `xmake -F utils/xmake.lua` to build python without loading the NVHPC modules, which will cause the build to fail.
 
 > [!IMPORTANT]
-> Currently supports **ONLY** nvidia GPUs.
+> Currently **supports ONLY nvidia** GPUs.
 
 ## Supported build paths
 
@@ -44,6 +52,17 @@ Tested with `nvc++`, `gcc`. It has a code patch to support `nvc++` compilation.
 ```bash
 xmake
 ```
+
+## About
+
+1. EFA support is embedded. It hasn't been tested as I miss the hardware, but it shouldn't be hard to make it work.
+
+Custom packages (xmake) for this project:
+
+- **nccl_headers** -> needed as nccl doesn't include complete headers in their installed release, and their are needed for the custom plugin implementation provided by uccl
+- **nccl** -> xmake doesn't support (yet) nccl as a dependency, so we need to tell it where to search for nccl headers and libs. It's works natively with nvhpc, and ubuntu/debian like installations. To make it work with arch based (or others) set `CUDA_HOME` env var to the cuda installation path, e.g. `CUDA_PATH=/opt/cuda xmake` on Arch based distros.
+
+# UCCL
 
 ## About
 
