@@ -30,11 +30,11 @@ Tested with `nvc++`, `gcc`. It has a code patch to support `nvc++` compilation.
 > - ibverbs
 >   Probably some others, I'll update this when I have time to check the deps.
 
-> [!WARNING]
-> If compiling with nvc++ you need to call `xmake -F utils/xmake.lua` to build python without loading the NVHPC modules, which will cause the build to fail.
-
 > [!IMPORTANT]
 > Currently **supports ONLY nvidia** GPUs.
+
+> [!WARNING]
+> If compiling with nvc++ you need to call `xmake -F utils/xmake.lua` to build python without loading the NVHPC modules, which will cause the build to fail.
 
 ## Supported build paths
 
@@ -61,6 +61,10 @@ Custom packages (xmake) for this project:
 
 - **nccl_headers** -> needed as nccl doesn't include complete headers in their installed release, and their are needed for the custom plugin implementation provided by uccl
 - **nccl** -> xmake doesn't support (yet) nccl as a dependency, so we need to tell it where to search for nccl headers and libs. It's works natively with nvhpc, and ubuntu/debian like installations. To make it work with arch based (or others) set `CUDA_HOME` env var to the cuda installation path, e.g. `CUDA_PATH=/opt/cuda xmake` on Arch based distros.
+
+⚠️⚠️ Why xmake? ⚠️⚠️
+
+Some clusters don't have cmake installed, and installing it without root access is a pain. Xmake is painless to install on user level.
 
 # UCCL
 
