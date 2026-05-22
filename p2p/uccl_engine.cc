@@ -138,6 +138,7 @@ void uccl_engine_destroy(uccl_engine_t* engine) {
 uccl_conn_t* uccl_engine_connect(uccl_engine_t* engine, char const* ip_addr,
                                  char const* remote_gpu, int remote_port,
                                  bool same_process) {
+  std::cout << "[CONN] INIT" << std::endl;
   if (!engine || !ip_addr) return nullptr;
   uccl_conn_t* conn = new uccl_conn;
   uint64_t conn_id;
@@ -161,6 +162,8 @@ uccl_conn_t* uccl_engine_connect(uccl_engine_t* engine, char const* ip_addr,
     GPU_RT_CHECK(gpuDeviceGetPCIBusId(bdf_buf, sizeof(bdf_buf), gpu_idx));
     remote_bdf = uccl::normalize_pci_bus_id(bdf_buf);
   }
+  std::cout << "[CONN] remote_bdf: " << remote_bdf << std::endl;
+
 
   // Decide whether to use IPC (connect_local) or network (connect).
   //
@@ -185,6 +188,9 @@ uccl_conn_t* uccl_engine_connect(uccl_engine_t* engine, char const* ip_addr,
     use_ipc = is_local && same_process;
   }
 
+  std::cout << "[CONN] use_ipc: " << use_ipc << std::endl;
+
+
   bool ok;
   if (use_ipc) {
     ok = engine->endpoint->connect_local(remote_bdf, conn_id, same_process);
@@ -207,6 +213,9 @@ uccl_conn_t* uccl_engine_connect(uccl_engine_t* engine, char const* ip_addr,
     }
   } else {
     // Remote inter-node: use RDMA/NCCL network connection.
+    std::cout << "[CONN] IP connect" << std::endl;
+    std::cout << "[CONN] IP: " << ip_addr << " port: " << remote_port << " conn_id: " << conn_id << std::endl;
+
     ok = engine->endpoint->connect(std::string(ip_addr), 0, remote_port,
                                    conn_id);
     if (ok) {
@@ -232,23 +241,32 @@ uccl_conn_t* uccl_engine_connect(uccl_engine_t* engine, char const* ip_addr,
 
 uccl_conn_t* uccl_engine_accept(uccl_engine_t* engine, char* ip_addr_buf,
                                 size_t ip_addr_buf_len, int* remote_gpu_idx) {
+  std::cout << "[ACCEPT] INIT" << std::endl;
+  
   if (!engine || !ip_addr_buf || !remote_gpu_idx) return nullptr;
   if (!uccl::is_nccl_transport()) {
+    std::cout << "[ACCEPT] passive accept" << std::endl;
     engine->endpoint->start_passive_accept();
   }
   uccl_conn_t* conn = new uccl_conn;
   std::string ip_addr;
   uint64_t conn_id;
   int gpu_idx;
+  std::cout << "[ACCEPT] accepting" << std::endl;
+
   bool ok = engine->endpoint->accept(ip_addr, gpu_idx, conn_id);
   if (!ok) {
     delete conn;
     return nullptr;
   }
+  std::cout << "[ACCEPT] accepted" << std::endl;
+
   std::strncpy(ip_addr_buf, ip_addr.c_str(), ip_addr_buf_len);
   *remote_gpu_idx = gpu_idx;
   conn->conn_id = conn_id;
   conn->sock_fd = engine->endpoint->get_sock_fd(conn_id);
+  std::cout << "[ACCEPT] got socket id: " << conn->sock_fd << std::endl;
+
   if (!uccl::is_nccl_transport()) {
     conn->oob_conn_key = engine->endpoint->get_oob_conn_key(conn_id);
   }

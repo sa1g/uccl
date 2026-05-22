@@ -280,7 +280,7 @@ set_languages("c++17")
 
 -- Include subdirectories with their own xmake.lua files
 includes("include")
--- includes("collective/rdma/")
+includes("collective/rdma/")
 -- includes("collective/efa")
 includes("p2p")
 -- includes("ep")
