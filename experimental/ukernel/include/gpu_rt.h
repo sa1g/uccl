@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdlib>
+
 #ifndef __HIP_PLATFORM_AMD__
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -87,9 +89,11 @@ inline gpuError_t gpuMemGetAddressRange(void** base_ptr, size_t* size,
 #define gpuDriverSuccess CUDA_SUCCESS
 #define gpuMemRangeHandleType CUmemRangeHandleType
 #define GPU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD
+#define gpuPointerAttributes cudaPointerAttributes
 #define gpuPointerAttribute_t cudaPointerAttributes
 #define gpuPointerGetAttributes cudaPointerGetAttributes
 #define gpuMemoryTypeDevice cudaMemoryTypeDevice
+#define gpuMemoryTypeManaged cudaMemoryTypeManaged
 #define GPU_DRIVER_LIB_NAME "libcuda.so.1"
 #define GPU_DRIVER_LIB_NAME_FALLBACK "libcuda.so"
 #define GPU_DRIVER_GET_HANDLE_FOR_ADDRESS_RANGE_NAME \
@@ -134,7 +138,7 @@ inline char const* gpuDrvGetErrorString(gpuDrvResult_t r) {
 #define gpuGetDeviceCount hipGetDeviceCount
 #define gpuGetDeviceProperties hipGetDeviceProperties
 #define gpuDeviceGetAttribute hipDeviceGetAttribute
-#define gpuDevAttrMultiProcessorCount hipDevAttrMultiProcessorCount
+#define gpuDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
 #define gpuDeviceProp hipDeviceProp_t
 #define gpuDeviceReset hipDeviceReset
 #define gpuDeviceGetPCIBusId hipDeviceGetPCIBusId
@@ -184,7 +188,8 @@ inline char const* gpuDrvGetErrorString(gpuDrvResult_t r) {
 #define gpuIpcOpenEventHandle hipIpcOpenEventHandle
 #define gpuIpcCloseEventHandle(handle) (gpuSuccess)
 #define gpuMemGetAddressRange hipMemGetAddressRange
-#define gpuLaunchKernel hipLaunchKernel
+#define gpuLaunchKernel(kernel, ...) \
+  hipLaunchKernel(reinterpret_cast<void const*>(kernel), __VA_ARGS__)
 #define gpuDeviceSynchronize hipDeviceSynchronize
 // DMA-BUF / GPU driver types for GPUDirect RDMA
 #define gpuDriverResult_t hipError_t
@@ -192,9 +197,11 @@ inline char const* gpuDrvGetErrorString(gpuDrvResult_t r) {
 #define gpuDriverSuccess hipSuccess
 #define gpuMemRangeHandleType hipMemRangeHandleType
 #define GPU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD hipMemRangeHandleTypeDmaBufFd
+#define gpuPointerAttributes hipPointerAttribute_t
 #define gpuPointerAttribute_t hipPointerAttribute_t
 #define gpuPointerGetAttributes hipPointerGetAttributes
 #define gpuMemoryTypeDevice hipMemoryTypeDevice
+#define gpuMemoryTypeManaged hipMemoryTypeManaged
 #define GPU_DRIVER_LIB_NAME "libamdhip64.so"
 #define GPU_DRIVER_LIB_NAME_FALLBACK "libamdhip64.so"
 #define GPU_DRIVER_GET_HANDLE_FOR_ADDRESS_RANGE_NAME \

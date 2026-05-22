@@ -1,11 +1,11 @@
 #pragma once
 
-#include "../request.h"
+#include <array>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -37,33 +37,56 @@ struct UcclPeerConnectSpec {
 
 struct IpcPeerConnectSpec {};
 
+struct RdmaPeerConnectSpec {
+  static constexpr int kMaxQPs = 4;
+
+  uint32_t remote_data_qpns[kMaxQPs] = {};
+  uint32_t remote_signal_qpn = 0;
+  uint8_t num_qps = kMaxQPs;
+  uint16_t remote_lid = 0;
+  std::array<uint8_t, 16> remote_gid_raw = {};
+
+  int local_dev_idx = -1;
+  int local_gpu_idx = -1;
+  int remote_dev_idx = -1;
+  int remote_gpu_idx = -1;
+};
+
 struct PeerConnectSpec {
   int peer_rank = -1;
   PeerConnectType type = PeerConnectType::Connect;
   std::variant<std::monostate, TcpPeerConnectSpec, UcclPeerConnectSpec,
-               IpcPeerConnectSpec>
+               IpcPeerConnectSpec, RdmaPeerConnectSpec>
       detail{};
 };
 
 class TransportAdapter {
  public:
-  using BounceBufferProvider = std::function<BounceBufferInfo(size_t)>;
+  struct WaitTarget {
+    void* local_ptr = nullptr;
+    size_t len = 0;
+    uint32_t local_buffer_id = 0;
+  };
 
   virtual ~TransportAdapter() = default;
 
-  virtual bool ensure_peer(PeerConnectSpec const& spec) = 0;
-  // Duplex readiness: both directions are established for this peer.
-  virtual bool has_peer(int peer_rank) const = 0;
+  // Directional path readiness.
+  virtual bool ensure_put_path(PeerConnectSpec const& spec) = 0;
+  virtual bool ensure_wait_path(PeerConnectSpec const& spec) = 0;
+  virtual bool has_put_path(int peer_rank) const = 0;
+  virtual bool has_wait_path(int peer_rank) const = 0;
 
-  virtual unsigned send_async(
-      // Adapter-facing id is always local registered buffer id.
-      int peer_rank, void* local_ptr, size_t len, uint32_t local_buffer_id,
-      std::optional<RemoteSlice> remote_hint,
-      BounceBufferProvider bounce_provider = nullptr) = 0;
-  virtual unsigned recv_async(
-      // Adapter-facing id is always local registered buffer id.
-      int peer_rank, void* local_ptr, size_t len, uint32_t local_buffer_id,
-      BounceBufferProvider bounce_provider = nullptr) = 0;
+  // Async data path.
+  // local_ptr / local_buffer_id: source data (may be host bounce buffer).
+  // remote_ptr / remote_buffer_id: resolved destination on peer, or nullptr/0
+  //   (for send/recv model where peer posts its own recv buffer).
+  virtual unsigned put_async(int peer_rank, void* local_ptr,
+                             uint32_t local_buffer_id, void* remote_ptr,
+                             uint32_t remote_buffer_id, size_t len) = 0;
+  virtual unsigned signal_async(int peer_rank, uint64_t tag) = 0;
+  virtual unsigned wait_async(
+      int peer_rank, uint64_t expected_tag,
+      std::optional<WaitTarget> target = std::nullopt) = 0;
 
   virtual bool poll_completion(unsigned id) = 0;
   virtual bool wait_completion(unsigned id) = 0;

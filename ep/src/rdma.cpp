@@ -3,6 +3,7 @@
 #include "proxy_ctx.hpp"
 #include "rdma_util.hpp"
 #include "util/gpu_rt.h"
+#include <infiniband/verbs.h>
 #ifdef USE_DMABUF
 #include <condition_variable>
 #include <map>
@@ -33,11 +34,13 @@
 #include <immintrin.h>
 #endif
 #include "bench_utils.hpp"
+#include "util/debug.h"
 #include "util/util.h"
 #include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -485,13 +488,24 @@ void per_thread_rdma_init(ProxyCtx& S, void* gpu_buf, size_t bytes, int rank,
         selected_nic_name = candidates[thread_idx % 4];
         use_ll_sl = true;
       } else if (num_efas == 16) {
-        assert(candidates.size() == 4);
-        // On p5e/p5en, there are 4 NICs with the same distance.
-        // We hardcode the first half Proxies to use the first NIC, and the
-        // second half to use the second NIC.
-        auto half = (local_rank % 2) * 2;
-        // GPU0 uses candidates[0/1], GPU1 uses candidates[2/3], etc.
-        selected_nic_name = candidates[thread_idx % 2 + half];
+        if (candidates.size() == 4) {
+          // On p5e/p5en, there are 4 NICs with the same distance per GPU.
+          // We hardcode the first half Proxies to use the first NIC, and the
+          // second half to use the second NIC.
+          auto half = (local_rank % 2) * 2;
+          // GPU0 uses candidates[0/1], GPU1 uses candidates[2/3], etc.
+          selected_nic_name = candidates[thread_idx % 2 + half];
+        } else if (candidates.size() == 2) {
+          // On p6-b300.48xlarge (B300, 16x400Gbps EFA), there are 2 NICs with
+          // the same distance per GPU. Stripe all proxy threads across both.
+          selected_nic_name = candidates[thread_idx % 2];
+        } else {
+          fprintf(stderr,
+                  "[WARN] num_efas=16 with unexpected candidates size %zu, "
+                  "defaulting to candidates[0]\n",
+                  candidates.size());
+          selected_nic_name = candidates[0];
+        }
         use_ll_sl = true;
       } else {
         // On p6-b200, there is 2 NICs with the same distance.
@@ -572,14 +586,14 @@ void per_thread_rdma_init(ProxyCtx& S, void* gpu_buf, size_t bytes, int rank,
     }
     g_shared_rdma_cv.notify_all();
   };
+#else
+  auto signal_failure = []() {};
 #endif
 
   S.context = ibv_open_device(dev_list[selected_dev_idx]);
   if (!S.context) {
     perror("Failed to open device");
-#ifdef USE_DMABUF
     signal_failure();
-#endif
     exit(1);
   }
   S.numa_node = uccl::get_dev_numa_node(selected_nic_name.c_str());
@@ -589,9 +603,7 @@ void per_thread_rdma_init(ProxyCtx& S, void* gpu_buf, size_t bytes, int rank,
   S.pd = ibv_alloc_pd(S.context);
   if (!S.pd) {
     perror("Failed to allocate PD");
-#ifdef USE_DMABUF
     signal_failure();
-#endif
     exit(1);
   }
   uint64_t iova = (uintptr_t)gpu_buf;
@@ -642,17 +654,13 @@ void per_thread_rdma_init(ProxyCtx& S, void* gpu_buf, size_t bytes, int rank,
   }
   if (!S.mr) {
     perror("RDMA buffer MR registration failed");
-#ifdef USE_DMABUF
     signal_failure();
-#endif
     exit(1);
   }
 
   if (S.rkey != 0) {
     fprintf(stderr, "Warning: rkey already set (%x), overwriting\n", S.rkey);
-#ifdef USE_DMABUF
     signal_failure();
-#endif
     exit(1);
   }
 
@@ -849,7 +857,7 @@ ibv_cq* create_per_thread_cq(ProxyCtx& S) {
   struct ibv_cq_init_attr_ex cq_ex_attr = {};
   cq_ex_attr.cqe = cq_depth;
   cq_ex_attr.cq_context = nullptr;
-  cq_ex_attr.channel = nullptr;
+  cq_ex_attr.channel = S.comp_channel;
   cq_ex_attr.comp_vector = 0;
   cq_ex_attr.comp_mask = 0;
   cq_ex_attr.flags = 0;
@@ -872,13 +880,29 @@ ibv_cq* create_per_thread_cq(ProxyCtx& S) {
   return ibv_cq_ex_to_cq(S.cq_ex);
 #else
   // Use standard CQ for other NICs like Broadcom
-  S.cq = ibv_create_cq(S.context, cq_depth, nullptr, nullptr, 0);
+  S.cq = ibv_create_cq(S.context, cq_depth, nullptr, S.comp_channel, 0);
   if (!S.cq) {
     perror("Failed to create CQ (ibv_create_cq)");
     exit(1);
   }
   return S.cq;
 #endif
+}
+
+ibv_comp_channel* create_per_thread_comp_channel(ProxyCtx& S) {
+  S.comp_channel = ibv_create_comp_channel(S.context);
+
+  if (!S.comp_channel) {
+    UCCL_LOG(FATAL) << "Could not allocate completion channel";
+  }
+
+  // make the channel nonblocking
+  int flags = fcntl(S.comp_channel->fd, F_GETFL, 0);
+  UCCL_PCHECK(flags != -1);
+  int ret = fcntl(S.comp_channel->fd, F_SETFL, flags | O_NONBLOCK);
+  UCCL_PCHECK(ret != -1);
+
+  return S.comp_channel;
 }
 
 #ifdef EFA

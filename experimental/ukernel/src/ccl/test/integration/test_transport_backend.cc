@@ -255,6 +255,7 @@ Transport::PreferredTransport parse_transport(std::string const& value) {
   if (value == "ipc") return Transport::PreferredTransport::Ipc;
   if (value == "uccl") return Transport::PreferredTransport::Uccl;
   if (value == "tcp") return Transport::PreferredTransport::Tcp;
+  if (value == "rdma") return Transport::PreferredTransport::Rdma;
   fail("unknown transport: " + value);
   return Transport::PreferredTransport::Auto;
 }
@@ -332,10 +333,10 @@ int run_rank(Options const& opts) {
       (opts.rank == 0) ? ExecOpKind::TransportSend : ExecOpKind::TransportRecv;
   op1.tile.flow_index = 0;
   op1.tile.size_bytes = opts.bytes;
-  op1.src = (opts.rank == 0) ? local_buffer_ref(input_id, 0)
-                             : remote_buffer_ref(scratch_id, 0, 0);
-  op1.dst = (opts.rank == 0) ? remote_buffer_ref(scratch_id, 1, 0)
-                             : local_buffer_ref(scratch_id, 0);
+  op1.src = (opts.rank == 0) ? local_buffer_ref(PlanBuffer::Input, 0)
+                             : remote_buffer_ref(PlanBuffer::Scratch, 0, 0);
+  op1.dst = (opts.rank == 0) ? remote_buffer_ref(PlanBuffer::Scratch, 1, 0)
+                             : local_buffer_ref(PlanBuffer::Scratch, 0);
   backend.validate(make_single_op_plan(opts.rank, opts.world_size, op1),
                    *memory);
   BackendToken token1 = backend.submit(op1, *memory);
@@ -371,10 +372,10 @@ int run_rank(Options const& opts) {
       (opts.rank == 1) ? ExecOpKind::TransportSend : ExecOpKind::TransportRecv;
   op2.tile.flow_index = 0;
   op2.tile.size_bytes = opts.bytes;
-  op2.src = (opts.rank == 1) ? local_buffer_ref(scratch_id, 0)
-                             : remote_buffer_ref(input_id, 1, 0);
-  op2.dst = (opts.rank == 1) ? remote_buffer_ref(input_id, 0, 0)
-                             : local_buffer_ref(input_id, 0);
+  op2.src = (opts.rank == 1) ? local_buffer_ref(PlanBuffer::Scratch, 0)
+                             : remote_buffer_ref(PlanBuffer::Input, 1, 0);
+  op2.dst = (opts.rank == 1) ? remote_buffer_ref(PlanBuffer::Input, 0, 0)
+                             : local_buffer_ref(PlanBuffer::Input, 0);
   backend.validate(make_single_op_plan(opts.rank, opts.world_size, op2),
                    *memory);
   BackendToken token2 = backend.submit(op2, *memory);

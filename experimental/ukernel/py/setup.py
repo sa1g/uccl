@@ -19,8 +19,8 @@ UCCL_ROOT = ROOT.parent.parent
 CUDA_HOME = Path("/usr/local/cuda")
 ROCM_HOME = Path(os.environ.get("ROCM_HOME", "/opt/rocm"))
 USE_ROCM = getattr(torch.version, "hip", None) is not None
-BUILD_CCL_ON_ROCM = os.environ.get("UKERNEL_BUILD_CCL_ON_ROCM", "0") == "1"
-RDMACM_SO = Path("/usr/lib/x86_64-linux-gnu/librdmacm.so.1")
+
+
 GDRCOPY_INCLUDE_DIR = Path(
     os.environ.get("GDRCOPY_INCLUDE_DIR", "/usr/local/include")
 )
@@ -35,6 +35,24 @@ def rel(path: Path) -> str:
     return str(path.resolve())
 
 
+transport_sources = [
+    rel(ROOT / "src" / "transport" / "communicator.cc"),
+    rel(ROOT / "src" / "transport" / "request_tracker.cc"),
+    rel(ROOT / "src" / "transport" / "bounce_buffer_pool.cc"),
+    rel(ROOT / "src" / "transport" / "memory" / "mr_manager.cc"),
+    rel(ROOT / "src" / "transport" / "memory" / "ipc_manager.cc"),
+    rel(ROOT / "src" / "transport" / "memory" / "shm_manager.cc"),
+    rel(ROOT / "src" / "transport" / "oob" / "oob.cc"),
+    rel(ROOT / "src" / "transport" / "oob" / "oob_socket.cc"),
+    rel(ROOT / "src" / "transport" / "adapter" / "ipc_adapter.cc"),
+    rel(ROOT / "src" / "transport" / "adapter" / "shmring_exchanger.cc"),
+    rel(ROOT / "src" / "transport" / "adapter" / "tcp_adapter.cc"),
+    rel(ROOT / "src" / "transport" / "adapter" / "uccl_adapter.cc"),
+    rel(ROOT / "src" / "transport" / "adapter" / "rdma_adapter.cc"),
+    rel(ROOT / "src" / "transport" / "util" / "utils.cc"),
+]
+
+
 sources = [
     rel(ROOT / "py" / "ukernel_ccl.cpp"),
     rel(NANOBIND_ROOT / "src" / "nb_combined.cpp"),
@@ -45,17 +63,7 @@ sources = [
     rel(ROOT / "src" / "ccl" / "plan.cc"),
     rel(ROOT / "src" / "ccl" / "selector.cc"),
     rel(ROOT / "src" / "ccl" / "topology.cc"),
-    rel(ROOT / "src" / "transport" / "communicator.cc"),
-    rel(ROOT / "src" / "transport" / "memory" / "mr_manager.cc"),
-    rel(ROOT / "src" / "transport" / "memory" / "ipc_manager.cc"),
-    rel(ROOT / "src" / "transport" / "memory" / "shm_manager.cc"),
-    rel(ROOT / "src" / "transport" / "oob" / "oob.cc"),
-    rel(ROOT / "src" / "transport" / "oob" / "oob_shm.cc"),
-    rel(ROOT / "src" / "transport" / "oob" / "oob_socket.cc"),
-    rel(ROOT / "src" / "transport" / "adapter" / "tcp_adapter.cc"),
-    rel(ROOT / "src" / "transport" / "adapter" / "uccl_adapter.cc"),
-    rel(ROOT / "src" / "transport" / "adapter" / "ipc_adapter.cc"),
-    rel(ROOT / "src" / "transport" / "util" / "utils.cc"),
+    *transport_sources,
     rel(ROOT / "src" / "device" / "fifo" / "c2d_fifo.cc"),
     rel(ROOT / "src" / "device" / "fifo" / "d2c_fifo.cpp"),
     rel(ROOT / "src" / "device" / "fifo" / "sm_fifo.cc"),
@@ -66,17 +74,7 @@ sources = [
 p2p_sources = [
     rel(ROOT / "py" / "ukernel_p2p.cpp"),
     rel(NANOBIND_ROOT / "src" / "nb_combined.cpp"),
-    rel(ROOT / "src" / "transport" / "communicator.cc"),
-    rel(ROOT / "src" / "transport" / "memory" / "mr_manager.cc"),
-    rel(ROOT / "src" / "transport" / "memory" / "ipc_manager.cc"),
-    rel(ROOT / "src" / "transport" / "memory" / "shm_manager.cc"),
-    rel(ROOT / "src" / "transport" / "oob" / "oob.cc"),
-    rel(ROOT / "src" / "transport" / "oob" / "oob_shm.cc"),
-    rel(ROOT / "src" / "transport" / "oob" / "oob_socket.cc"),
-    rel(ROOT / "src" / "transport" / "adapter" / "tcp_adapter.cc"),
-    rel(ROOT / "src" / "transport" / "adapter" / "uccl_adapter.cc"),
-    rel(ROOT / "src" / "transport" / "adapter" / "ipc_adapter.cc"),
-    rel(ROOT / "src" / "transport" / "util" / "utils.cc"),
+    *transport_sources,
 ]
 
 include_dirs = [
@@ -91,6 +89,8 @@ include_dirs = [
     rel(UCCL_ROOT / "collective" / "rdma"),
     rel(UCCL_ROOT / "include"),
     str(GDRCOPY_INCLUDE_DIR),
+    "/usr/local/include",
+    "/usr/include",
 ]
 if USE_ROCM:
     include_dirs.append(str(ROCM_HOME / "include"))
@@ -143,7 +143,9 @@ cuda_nvcc_args = [
     "arch=compute_89,code=sm_89",
 ]
 
-ExtensionCls = CppExtension if USE_ROCM else CUDAExtension
+if USE_ROCM:
+    os.environ.setdefault("CUDA_HOME", str(ROCM_HOME))
+ExtensionCls = CUDAExtension
 
 common_libraries = [
     "gflags",
@@ -155,48 +157,75 @@ common_libraries = [
     "numa",
 ]
 if USE_ROCM:
-    common_libraries.extend(["amdhip64", "elf", "dl"])
+    library_dirs.append(str(RDMA_STATIC.parent.resolve()))
+    common_libraries.extend(["amdhip64", "elf", "dl", "rdma_hip"])
 else:
-    common_libraries.append("rdmacm")
-    common_libraries.extend(["cudart", "cuda", "gdrapi"])
+    library_dirs.append(str(RDMA_STATIC.parent.resolve()))
+    common_libraries.extend(["cudart", "cuda", "gdrapi", "rdma"])
 
 extra_link_args = []
-if USE_ROCM and RDMACM_SO.exists():
-    extra_link_args.append(str(RDMACM_SO.resolve()))
+
+
+extension_kwargs = dict(
+    sources=sources,
+    include_dirs=include_dirs,
+    library_dirs=library_dirs,
+    libraries=common_libraries,
+    extra_link_args=extra_link_args,
+    runtime_library_dirs=runtime_library_dirs,
+)
+if USE_ROCM:
+    extension_kwargs["extra_compile_args"] = {
+        "cxx": common_cxx_args,
+        "nvcc": [
+            "-O3",
+            "-std=c++17",
+            "-Wall",
+            "-Wno-sign-compare",
+            "-Wno-reorder",
+            "-Wno-unused-variable",
+            "-Wno-unused-label",
+            "-Wno-unused-but-set-variable",
+            "-Wno-narrowing",
+            "-pthread",
+            "-fPIC",
+            "-D__HIP_PLATFORM_AMD__",
+            "-DUKERNEL_ENABLE_TMA=0",
+        ],
+    }
+else:
+    extension_kwargs["extra_compile_args"] = {
+        "cxx": common_cxx_args,
+        "nvcc": cuda_nvcc_args,
+    }
 
 ext = ExtensionCls(
     name="ukernel_ccl._C",
-    sources=sources,
+    **extension_kwargs,
+)
+
+p2p_extension_kwargs = dict(
+    sources=p2p_sources,
     include_dirs=include_dirs,
-    extra_compile_args=common_cxx_args if USE_ROCM else {
-        "cxx": common_cxx_args,
-        "nvcc": cuda_nvcc_args,
-    },
     library_dirs=library_dirs,
     libraries=common_libraries,
-    extra_objects=[str(RDMA_STATIC.resolve())],
     extra_link_args=extra_link_args,
     runtime_library_dirs=runtime_library_dirs,
 )
+if USE_ROCM:
+    p2p_extension_kwargs["extra_compile_args"] = extension_kwargs["extra_compile_args"]
+else:
+    p2p_extension_kwargs["extra_compile_args"] = {
+        "cxx": common_cxx_args,
+        "nvcc": cuda_nvcc_args,
+    }
 
 p2p_ext = ExtensionCls(
     name="ukernel_p2p._C",
-    sources=p2p_sources,
-    include_dirs=include_dirs,
-    extra_compile_args=common_cxx_args if USE_ROCM else {
-        "cxx": common_cxx_args,
-        "nvcc": cuda_nvcc_args,
-    },
-    library_dirs=library_dirs,
-    libraries=common_libraries,
-    extra_objects=[str(RDMA_STATIC.resolve())],
-    extra_link_args=extra_link_args,
-    runtime_library_dirs=runtime_library_dirs,
+    **p2p_extension_kwargs,
 )
 
-ext_modules = [p2p_ext]
-if not USE_ROCM or BUILD_CCL_ON_ROCM:
-    ext_modules.insert(0, ext)
+ext_modules = [ext, p2p_ext]
 
 
 setup(
