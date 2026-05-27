@@ -1,30 +1,105 @@
--- ============================================================================
--- P2P Engine (C++ shared library)
--- ============================================================================
+-- set_project("uccl_p2p")
+-- set_languages("cxx20")
 
-option("use_dietgpu")
+add_rules("mode.debug", "mode.release")
+
+-- ----------------------------------------------------------------------------
+-- Options
+-- ----------------------------------------------------------------------------
+
+option("dietgpu")
     set_default(false)
+    set_showmenu(true)
     set_description("Enable DietGPU compression")
 option_end()
 
-rule("p2p.base")
+if has_config("dietgpu") then
+    print("DietGPU support is currently disabled due to libtorch compilation issues. Please check the documentation for updates.")
+end
+
+-- ----------------------------------------------------------------------------
+-- Custom Packages
+-- ----------------------------------------------------------------------------
+
+package("dietgpu")
+    set_kind("library")
+    set_homepage("https://github.com/facebookresearch/dietgpu")
+    set_description("DietGPU compression library for GPU tensors")
+
+    set_urls("https://github.com/facebookresearch/dietgpu.git")
+    add_versions("latest", "a4d70a14066d2c3e5fe1849b3723e4cd423eee7e")
+
+    add_deps("cmake", "libtorch")
+
+    on_install(function (package)
+        import("package.tools.cmake")
+
+        cmake.install(package, {
+            "-DBUILD_SHARED_LIBS=ON"
+        })
+    end)
+
+    on_load(function (package)
+        package:add("links", "dietgpu_float")
+    end)
+package_end()
+
+-- ----------------------------------------------------------------------------
+-- Dependencies
+-- ----------------------------------------------------------------------------
+
+add_requires("cuda")
+add_requires("python")
+add_requires("nanobind")
+
+-- if has_config("dietgpu") then
+--     add_requires("dietgpu::a4d70a14", {system = false, external = false})
+-- end
+
+-- ----------------------------------------------------------------------------
+-- CUDA Configuration
+-- ----------------------------------------------------------------------------
+
+toolchain("cuda")
+    set_kind("standalone")
+toolchain_end()
+
+-- ----------------------------------------------------------------------------
+-- Common Rule
+-- ----------------------------------------------------------------------------
+
+rule("p2p.common")
     on_load(function (target)
-        local p2p_dir = os.scriptdir()
-        local project_dir = path.join(p2p_dir, "..")
-        local cuda_home = os.getenv("CUDA_HOME") or "/usr/local/cuda"
-        local efa_home = os.getenv("EFA_HOME") or "/opt/amazon/efa"
+
+        local rootdir = os.scriptdir()
+        local projectdir = path.join(rootdir, "..")
 
         target:add("includedirs",
-            p2p_dir,
-            path.join(p2p_dir, "include"),
-            path.join(project_dir, "include"),
-            cuda_home .. "/include",
-            efa_home .. "/include",
+            rootdir,
+            path.join(rootdir, "include"),
+            path.join(projectdir, "include"),
             {public = true}
         )
 
-        target:add("linkdirs", cuda_home .. "/lib64")
-        target:add("links", "cudart", "cuda", "pthread", "z", "elf", "dl")
+        target:add("syslinks",
+            "pthread",
+            "dl",
+            "z",
+            "elf"
+        )
+
+        target:add("packages",
+            "cuda",
+            "python",
+            "nanobind"
+        )
+
+        target:add("cxflags",
+            "-Wno-pointer-arith",
+            "-Wno-sign-compare",
+            "-Wno-unused-variable"
+        )
+
         target:add("ldflags",
             "-Wl,--wrap=ibv_get_device_list",
             "-Wl,--wrap=ibv_query_port",
@@ -32,28 +107,31 @@ rule("p2p.base")
             "-Wl,--wrap=ibv_reg_dmabuf_mr",
             "-Wl,--wrap=ibv_create_cq",
             "-Wl,--wrap=ibv_create_qp",
-            "-Wl,--wrap=ibv_qp_to_qp_ex"
+            "-Wl,--wrap=ibv_qp_to_qp_ex",
+            {force = true}
         )
 
-        target:add("cxxflags",
-            "-O3",
-            "-fPIC",
-            "-Wno-pointer-arith",
-            "-Wno-sign-compare",
-            "-Wno-unused-variable"
-        )
-
-        target:add("packages", "python")
-        target:add("packages", "nanobind")
+        -- if has_config("dietgpu") then
+        --     target:add("packages", "dietgpu")
+        --     target:add("defines", "USE_DIETGPU")
+        -- end
     end)
 rule_end()
 
-target("uccl_p2p_core")
+-- ----------------------------------------------------------------------------
+-- Target
+-- ----------------------------------------------------------------------------
+
+target("uccl_p2p")
     set_kind("shared")
     set_targetdir("$(builddir)/lib")
-    set_basename("uccl_p2p")
 
-    add_rules("uccl.backend", "p2p.base")
+    add_rules(
+        "p2p.common",
+        "uccl.backend"
+    )
+
+    set_toolchains("cuda")
 
     add_files(
         "engine.cc",
@@ -63,3 +141,9 @@ target("uccl_p2p_core")
         "nccl/nccl_dl.cc",
         "rdma/efadv_dl.cc"
     )
+
+    -- Native CUDA arch handling
+    add_cugencodes("native")
+
+    set_optimize("fastest")
+    set_symbols("hidden")
